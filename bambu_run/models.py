@@ -33,11 +33,33 @@ def ams_type_from_info(info_code) -> str:
     return AMS_INFO_TO_TYPE.get(code[-4:], "") or AMS_INFO_TO_TYPE.get(code, "")
 
 
+class PrinterManager(models.Manager):
+    """Default manager — scopes every query to actual 3D printers.
+
+    `Printer` shares the `infrastructure_device` table with a host project's other
+    device rows (RAE stores its NAS, routers and cameras there too). Without this
+    scoping, `Printer.objects.filter(is_active=True).first()` can return a NAS.
+    """
+
+    def get_queryset(self):
+        return super().get_queryset().filter(category=Printer.CATEGORY_3D_PRINTER)
+
+
 class Printer(models.Model):
     """Represents a Bambu Lab 3D printer device"""
 
+    CATEGORY_3D_PRINTER = "threed_printer"
+
     name = models.CharField(max_length=200, help_text="Friendly device name")
     model = models.CharField(max_length=100, help_text="Device model (e.g., X1C, P1S)")
+    category = models.CharField(
+        max_length=50,
+        default=CATEGORY_3D_PRINTER,
+        help_text=(
+            "Device category. Always 'threed_printer' for printers — present because "
+            "host projects may share this table with other device types."
+        ),
+    )
     manufacturer = models.CharField(
         max_length=100, default="Bambu Lab", help_text="e.g., Bambu Lab"
     )
@@ -52,11 +74,19 @@ class Printer(models.Model):
     first_seen = models.DateTimeField(auto_now_add=True)
     last_updated = models.DateTimeField(auto_now=True)
 
+    # `all_objects` is declared first so it serves as the base manager for related
+    # descriptors (PrinterMetrics.device etc.) — those must never filter, or rows
+    # attached to a mis-categorised device become unreachable.
+    all_objects = models.Manager()
+    objects = PrinterManager()
+
     class Meta:
         db_table = "infrastructure_device"
         verbose_name = "Printer"
         verbose_name_plural = "Printers"
         ordering = ["name"]
+        base_manager_name = "all_objects"
+        default_manager_name = "objects"
 
     def __str__(self):
         return f"{self.name} ({self.model})"

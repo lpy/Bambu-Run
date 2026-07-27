@@ -57,8 +57,13 @@ def test_filament_timeline_keeps_same_tray_id_units_separate(logged_in_client):
         type="PLA", sub_type="PLA Basic", color="FF0000", remain_percent=50,
     )
 
+    from bambu_run.views import fetch_snapshots_by_metric
+
     view = PrinterDashboardView()
-    timeline = view._prepare_filament_timeline(PrinterMetrics.objects.filter(pk=metric.pk))
+    metrics = list(PrinterMetrics.objects.filter(pk=metric.pk))
+    timeline = view._prepare_filament_timeline(
+        metrics, fetch_snapshots_by_metric(metrics)
+    )
 
     assert len(timeline) == 2
 

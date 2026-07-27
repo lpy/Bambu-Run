@@ -14,9 +14,13 @@ from .conf import app_settings
 from .models import Printer, PrinterMetrics, Filament, FilamentColor, FilamentType, FilamentSnapshot, PrintJob, FilamentUsage, Hotend
 from .forms import FilamentForm, FilamentColorForm, FilamentTypeForm
 
+# Every field the chart serializers read must be listed here. A field that is
+# accessed but missing triggers a deferred-field load — one extra SELECT per row,
+# which turns a single-query page into thousands.
 _METRICS_API_FIELDS = [
     'id', 'device_id', 'timestamp',
     'nozzle_temp', 'nozzle_target_temp',
+    'nozzle_temp_left', 'nozzle_target_temp_left',
     'bed_temp', 'bed_target_temp',
     'print_percent', 'cooling_fan_speed', 'heatbreak_fan_speed',
     'wifi_signal_dbm', 'ams_humidity_raw', 'ams_temp',
@@ -25,6 +29,9 @@ _METRICS_API_FIELDS = [
     'external_spool',
 ]
 _MAX_CHART_POINTS = 3000
+# Fallback window for requests that don't specify a full date range. Without it a
+# bare API call scans the entire metrics table.
+_DEFAULT_WINDOW = timedelta(hours=24)
 
 
 def resolve_printer_from_request(pk):
@@ -32,10 +39,45 @@ def resolve_printer_from_request(pk):
 
     `pk` given (URL kwarg) -> that exact printer, 404 if missing/inactive.
     `pk` omitted -> first active printer (today's single-printer default behavior).
+
+    Both paths go through `Printer.objects`, which is category-scoped, so a
+    non-printer row sharing `infrastructure_device` (a NAS, a router) can never be
+    resolved as "the printer" — even when no active printer exists.
     """
     if pk is not None:
         return get_object_or_404(Printer, pk=pk, is_active=True)
     return Printer.objects.filter(is_active=True).first()
+
+
+def sample_metrics(metrics_list, max_points=None):
+    """Evenly thin a metrics list to at most `max_points`, always keeping the last
+    reading — the stat cards are built from it."""
+    max_points = max_points or _MAX_CHART_POINTS
+    total = len(metrics_list)
+    if total <= max_points:
+        return metrics_list
+    step = (total // max_points) + 1
+    sampled = metrics_list[::step]
+    if sampled[-1] is not metrics_list[-1]:
+        sampled.append(metrics_list[-1])
+    return sampled
+
+
+def fetch_snapshots_by_metric(metrics_list):
+    """Load filament snapshots for exactly the metrics we're serializing.
+
+    Beats `prefetch_related` on the unsampled queryset, which pulls a snapshot row
+    for every metric in the window (~25k rows for 24h) including the ones sampling
+    just discarded.
+    """
+    if not metrics_list:
+        return {}
+    snapshots_by_metric = {}
+    for snap in FilamentSnapshot.objects.filter(
+        printer_metric_id__in=[m.id for m in metrics_list]
+    ):
+        snapshots_by_metric.setdefault(snap.printer_metric_id, []).append(snap)
+    return snapshots_by_metric
 
 
 class PrinterDashboardView(LoginRequiredMixin, TemplateView):
@@ -72,14 +114,28 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
 
         # Get date range (overridable by subclasses)
         start_dt, end_dt = self._get_date_range(self.request)
-        metrics = PrinterMetrics.objects.filter(
+        query = PrinterMetrics.objects.filter(
             device=printer_device, timestamp__gte=start_dt
         )
         if end_dt:
-            metrics = metrics.filter(timestamp__lte=end_dt)
-        metrics = metrics.prefetch_related('filament_snapshots').order_by("timestamp")
+            query = query.filter(timestamp__lte=end_dt)
 
-        latest_metric = metrics.last()
+        # Chart series only need the columns the serializer below reads, and only
+        # as many points as a chart can render. Fetching every column (including
+        # the large JSON blobs) for every row is what made this page slow.
+        metrics = sample_metrics(
+            list(query.only(*_METRICS_API_FIELDS).order_by("timestamp"))
+        )
+        snapshots_by_metric = fetch_snapshots_by_metric(metrics)
+
+        # The stat cards read far more fields than the charts do, so the latest
+        # reading is fetched separately as a full instance rather than deferring
+        # (a deferred field on a sampled row costs an extra query per access).
+        latest_metric = (
+            query.prefetch_related('filament_snapshots__filament')
+            .order_by("-timestamp")
+            .first()
+        )
 
         printer_data_json = {
             "timestamps": [
@@ -133,14 +189,17 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
             "total_layer_num": [
                 m.total_layer_num if m.total_layer_num else 0 for m in metrics
             ],
-            "filament_timeline": self._prepare_filament_timeline(metrics),
+            "filament_timeline": self._prepare_filament_timeline(
+                metrics, snapshots_by_metric
+            ),
         }
 
         stats = {}
         if latest_metric:
             filaments_list = []
             try:
-                filament_snapshots = latest_metric.filament_snapshots.select_related('filament').all()
+                # `.all()` (not `.select_related()`) so the prefetch cache is used
+                filament_snapshots = latest_metric.filament_snapshots.all()
                 for snapshot in filament_snapshots:
                     filament_dict = {
                         'tray_id': snapshot.tray_id,
@@ -263,18 +322,18 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
                 "timestamp": latest_metric.timestamp.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S"),
             }
 
-        project_markers = self._calculate_project_markers(list(metrics), tz)
+        project_markers = self._calculate_project_markers(metrics, tz, printer_device)
         printer_data_json["project_markers"] = project_markers
 
         context["printer_device"] = printer_device
         context["device_name"] = printer_device.name
         context["stats"] = stats
-        context["metrics_count"] = metrics.count()
+        context["metrics_count"] = len(metrics)
         context["printer_data_json"] = json.dumps(printer_data_json)
 
         return context
 
-    def _calculate_project_markers(self, metrics, timezone_info):
+    def _calculate_project_markers(self, metrics, timezone_info, device):
         """Calculate where print jobs start and end, using cloud design_title when available."""
         if not metrics:
             return []
@@ -282,7 +341,6 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
         # Build a lookup: subtask_name -> display_name from PrintJobs in this time window
         window_start = metrics[0].timestamp
         window_end = metrics[-1].timestamp
-        device = metrics[0].device
         jobs_qs = PrintJob.objects.filter(
             device=device,
             start_time__gte=window_start - timedelta(minutes=5),
@@ -328,18 +386,17 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
 
         return markers
 
-    def _prepare_filament_timeline(self, metrics):
-        """Prepare filament data organized by unique filament configurations."""
+    def _prepare_filament_timeline(self, metrics, snapshots_by_metric):
+        """Prepare filament data organized by unique filament configurations.
+
+        Snapshots are passed in pre-grouped by metric id; reading them off each
+        metric instance instead would issue one query per point.
+        """
         filament_data = {}
         total_points = len(metrics)
 
         for idx, metric in enumerate(metrics):
-            try:
-                snapshots = metric.filament_snapshots.all()
-            except Exception:
-                snapshots = []
-
-            for snapshot in snapshots:
+            for snapshot in snapshots_by_metric.get(metric.id, []):
                 tray_id = snapshot.tray_id
                 ams_unit_id = snapshot.ams_unit_id
                 ams_type = snapshot.ams_type or ''
@@ -415,38 +472,25 @@ class PrinterDataAPIView(LoginRequiredMixin, View):
                 .only(*_METRICS_API_FIELDS)
             )
 
-            if start_date and start_time and end_date and end_time:
-                start_dt = datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
-                end_dt = datetime.strptime(f"{end_date} {end_time}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
-                query = query.filter(timestamp__gte=start_dt, timestamp__lte=end_dt)
-                range_seconds = (end_dt - start_dt).total_seconds()
-                expected_count = max(1, int(range_seconds / 30))
-            elif start_date and start_time:
-                start_dt = datetime.strptime(f"{start_date} {start_time}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
-                query = query.filter(timestamp__gte=start_dt)
-                expected_count = _MAX_CHART_POINTS
-            elif end_date and end_time:
-                end_dt = datetime.strptime(f"{end_date} {end_time}", "%Y-%m-%d %H:%M").replace(tzinfo=tz)
-                query = query.filter(timestamp__lte=end_dt)
-                expected_count = _MAX_CHART_POINTS
-            else:
-                expected_count = _MAX_CHART_POINTS
+            # Both bounds are always applied. A missing bound falls back to a 24h
+            # window rather than being left open — an unbounded range would scan
+            # every metric ever recorded.
+            def _parse(date_str, time_str):
+                return datetime.strptime(
+                    f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
+                ).replace(tzinfo=tz)
 
-            step = max(1, expected_count // _MAX_CHART_POINTS)
+            end_dt = _parse(end_date, end_time) if end_date else timezone.now()
+            start_dt = _parse(start_date, start_time) if start_date else end_dt - _DEFAULT_WINDOW
+            query = query.filter(timestamp__gte=start_dt, timestamp__lte=end_dt)
 
             # Stage B: single DB round-trip, downsample in Python
-            metrics_list = list(query.order_by("timestamp"))
-            if step > 1:
-                metrics_list = metrics_list[::step]
+            metrics_list = sample_metrics(list(query.order_by("timestamp")))
 
             total_points = len(metrics_list)
 
             # Stage C: targeted snapshot fetch (only sampled IDs)
-            snapshots_by_metric: dict = {}
-            if metrics_list:
-                sampled_ids = [m.id for m in metrics_list]
-                for snap in FilamentSnapshot.objects.filter(printer_metric_id__in=sampled_ids):
-                    snapshots_by_metric.setdefault(snap.printer_metric_id, []).append(snap)
+            snapshots_by_metric = fetch_snapshots_by_metric(metrics_list)
 
             # Stage D: single-pass serialization
             timestamps = []
