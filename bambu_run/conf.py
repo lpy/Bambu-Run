@@ -81,5 +81,12 @@ class _Settings:
     def CLOUD_SYNC_DAYS(self):
         return get_setting("BAMBU_RUN_CLOUD_SYNC_DAYS", 30)
 
+    # Seconds of silence on the MQTT report topic that, once broken by a new
+    # message, is treated as "the printer was probably offline" and triggers
+    # a pushall re-sync instead of trusting the partial delta to fill in stale
+    # fields left over from before the gap.
+    @property
+    def MQTT_RESYNC_GAP_SECONDS(self):
+        return get_setting("BAMBU_RUN_MQTT_RESYNC_GAP_SECONDS", 90)
 
 app_settings = _Settings()

@@ -21,6 +21,7 @@ import os
 import platform
 import sys
 import select
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -829,6 +830,7 @@ class BambuPrinter:
         self._accumulator = PrinterStateAccumulator()
         self._connected = False
         self._devices: List[Dict[str, Any]] = []
+        self._last_message_at: Optional[float] = None
 
     def _get_fresh_token(self, verification_code_timeout: int = 300) -> str:
         """Get a fresh token using credentials."""
@@ -934,6 +936,30 @@ class BambuPrinter:
         """Internal MQTT message handler"""
         if not data:
             return
+
+        # The printer publishes partial deltas most of the time; the accumulator
+        # merges them onto whatever it already has. If the printer went offline
+        # (power cycle) and just reconnected, the first delta after the gap would
+        # otherwise be merged onto stale pre-outage state, leaving fields like
+        # nozzle_temp frozen at their last value until some unrelated full report
+        # happens to refresh them. Detect the gap and force a full pushall so the
+        # accumulator gets a clean, complete state instead.
+        now = time.time()
+        if (
+            self._last_message_at is not None
+            and now - self._last_message_at > app_settings.MQTT_RESYNC_GAP_SECONDS
+            and self._mqtt is not None
+        ):
+            try:
+                self._mqtt.request_full_status()
+                logger.info(
+                    "MQTT report gap of %.0fs detected for %s; requested full status re-sync",
+                    now - self._last_message_at, device_id,
+                )
+            except Exception as e:
+                logger.warning("Full status re-sync request failed (non-fatal): %s", e)
+        self._last_message_at = now
+
         state = self._accumulator.update(data)
         if self._on_update:
             self._on_update(state)
