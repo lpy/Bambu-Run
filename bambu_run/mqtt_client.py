@@ -486,15 +486,29 @@ class PrinterState:
 
         wifi_signal = print_data.get("wifi_signal", "")
 
-        # H2C dual-nozzle decoding. The H2C reports per-extruder temperatures
-        # under `print.device.extruder.info[]` as a 2-element array (index 0 =
-        # right, index 1 = left). The `temp` field is bit-packed:
+        # Dual-nozzle decoding (H2C, X2D). Dual-nozzle printers report per-extruder
+        # temperatures under `print.device.extruder.info[]` as a 2-element array
+        # (index 0 = right, index 1 = left). The `temp` field is bit-packed:
         # `temp_raw = (target << 16) | current`, both °C as ints.
+        #
+        # The legacy top-level `nozzle_temper`/`nozzle_target_temper` fields track
+        # whichever nozzle is currently *active*, not specifically the right one —
+        # on printers like the X2D they report the left nozzle's temp while it's
+        # printing, even though the dashboard's "Right Nozzle" card reads them.
+        # Prefer the decoded right-side value from extruder.info[0] when present.
         nozzle_temp_left = None
         nozzle_target_temp_left = None
+        nozzle_temp_right = None
+        nozzle_target_temp_right = None
         device = print_data.get("device") or {}
         extruders = (device.get("extruder") or {}).get("info") or []
         if len(extruders) >= 2:
+            right = extruders[0]
+            t = right.get("temp")
+            if isinstance(t, int):
+                nozzle_target_temp_right = float((t >> 16) & 0xFFFF)
+                nozzle_temp_right = float(t & 0xFFFF)
+
             left = extruders[1]
             t = left.get("temp")
             if isinstance(t, int):
@@ -510,8 +524,14 @@ class PrinterState:
         return cls(
             timestamp=timestamp,
             sequence_id=str(print_data.get("sequence_id", "")),
-            nozzle_temp=float(print_data.get("nozzle_temper", 0.0)),
-            nozzle_target_temp=float(print_data.get("nozzle_target_temper", 0.0)),
+            nozzle_temp=(
+                nozzle_temp_right if nozzle_temp_right is not None
+                else float(print_data.get("nozzle_temper", 0.0))
+            ),
+            nozzle_target_temp=(
+                nozzle_target_temp_right if nozzle_target_temp_right is not None
+                else float(print_data.get("nozzle_target_temper", 0.0))
+            ),
             bed_temp=float(print_data.get("bed_temper", 0.0)),
             bed_target_temp=float(print_data.get("bed_target_temper", 0.0)),
             chamber_temp=float(print_data.get("chamber_temper", 0.0)),
