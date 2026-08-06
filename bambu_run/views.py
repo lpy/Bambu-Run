@@ -28,7 +28,13 @@ _METRICS_API_FIELDS = [
     'gcode_state', 'print_type', 'subtask_name',
     'external_spool',
 ]
-_MAX_CHART_POINTS = 3000
+# 24h at the collector's 30s cadence is ~2800 readings, and every one of them
+# also drags in ~9 FilamentSnapshot rows — that snapshot fetch, not the metrics
+# query, is what dominated the dashboard's load time (measured: 2.09s of context
+# building and a 410 KB payload at 3000). 1440 caps the series at roughly one
+# point per minute over a day, which is finer than any chart can resolve on
+# screen, and cuts both the server time and the payload by ~4x.
+_MAX_CHART_POINTS = 1440
 # Fallback window for requests that don't specify a full date range. Without it a
 # bare API call scans the entire metrics table.
 _DEFAULT_WINDOW = timedelta(hours=24)
