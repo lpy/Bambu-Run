@@ -10,7 +10,7 @@
         </div>
         <div class="col-md-4 text-end">
             {% if not is_basic_user %}
-            <a href="{% url 'bambu_run:filament_type_create' %}" class="btn btn-primary">
+            <a href="{% url 'bambu_run:filament_type_create' %}" class="btn btn-primary{% if not can_write %} disabled" aria-disabled="true" tabindex="-1" title="Read-only access{% endif %}">
                 <i class="bi bi-plus-circle"></i> Add New Type
             </a>
             {% endif %}
@@ -63,8 +63,8 @@
                             <td class="align-middle">{{ ft.brand }}</td>
                             <td class="align-middle">
                                 {% if not is_basic_user %}
-                                <a href="{% url 'bambu_run:filament_type_update' ft.pk %}" class="btn btn-sm btn-warning">Edit</a>
-                                <a href="{% url 'bambu_run:filament_type_delete' ft.pk %}" class="btn btn-sm btn-danger">Delete</a>
+                                <a href="{% url 'bambu_run:filament_type_update' ft.pk %}" class="btn btn-sm btn-warning{% if not can_write %} disabled" aria-disabled="true" tabindex="-1" title="Read-only access{% endif %}">Edit</a>
+                                <a href="{% url 'bambu_run:filament_type_delete' ft.pk %}" class="btn btn-sm btn-danger{% if not can_write %} disabled" aria-disabled="true" tabindex="-1" title="Read-only access{% endif %}">Delete</a>
                                 {% endif %}
                             </td>
                         </tr>

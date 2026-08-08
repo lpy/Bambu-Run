@@ -20,7 +20,7 @@
             <a href="{% url 'bambu_run:filament_color_list' %}" class="btn btn-outline-info me-2">
                 <i class="bi bi-palette"></i> Manage Colors
             </a>
-            <a href="{% url 'bambu_run:filament_create' %}" class="btn btn-primary">
+            <a href="{% url 'bambu_run:filament_create' %}" class="btn btn-primary{% if not can_write %} disabled" aria-disabled="true" tabindex="-1" title="Read-only access{% endif %}">
                 <i class="bi bi-plus-circle"></i> Add Filament
             </a>
         </div>
@@ -177,7 +177,7 @@
                             <td class="align-middle">
                                 <a href="{% url 'bambu_run:filament_detail' filament.pk %}" class="btn btn-sm btn-info">View</a>
                                 {% if not is_basic_user %}
-                                <a href="{% url 'bambu_run:filament_update' filament.pk %}" class="btn btn-sm btn-warning">Edit</a>
+                                <a href="{% url 'bambu_run:filament_update' filament.pk %}" class="btn btn-sm btn-warning{% if not can_write %} disabled" aria-disabled="true" tabindex="-1" title="Read-only access{% endif %}">Edit</a>
                                 {% endif %}
                             </td>
                         </tr>
