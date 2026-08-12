@@ -20,8 +20,42 @@ It runs quietly in the background 24/7, capturing every print, filament change, 
 
 ---
 
+## What It Looks Like
+
+<table>
+  <tr>
+    <td width="50%">
+      <p align="center"><strong>Live Dashboard</strong><br/>Real-time nozzle temps, bed temp, print progress, and chamber light.</p>
+      <img src="https://github.com/user-attachments/assets/169ec3e5-62a9-4e96-afed-dc6ac2647aef" alt="Live Dashboard" width="100%"/>
+    </td>
+    <td width="50%">
+      <p align="center"><strong>Historical Charts</strong><br/>Filament remaining and nozzle temp over time, per printer.</p>
+      <img src="https://github.com/user-attachments/assets/11913c62-254f-4ba6-8d93-d5c27a9406be" alt="Historical Charts" width="100%"/>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <p align="center"><strong>Filament Inventory</strong><br/>Every spool you own — brand, type, color, remaining %, current tray.</p>
+      <img src="https://github.com/user-attachments/assets/8e472704-a6d8-45e1-93c4-c6f37d0b55a0" alt="Filament Inventory" width="100%"/>
+    </td>
+    <td width="50%">
+      <p align="center"><strong>AMS / Filament Slots</strong><br/>What's loaded right now, grouped by AMS unit, with humidity/temp.</p>
+      <img src="https://github.com/user-attachments/assets/200ad65f-a716-4a52-98b2-d5f5ce2445b9" alt="AMS / Filament Slots" width="100%"/>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <p align="center"><strong>Hotend Wear Tracking</strong><br/>Used time and wear per hotend slot — handy for multi-nozzle / AMS-fed toolhead setups.</p>
+      <img src="https://github.com/user-attachments/assets/defee0da-772c-40c2-8dcf-9d3f230cc5ee" alt="Hotend Wear Tracking" width="100%"/>
+    </td>
+  </tr>
+</table>
+
+---
+
 ## Table of Contents
 
+- [What It Looks Like](#what-it-looks-like)
 - [Native Setup (Recommended for Raspberry Pi)](#native-setup-recommended-for-raspberry-pi)
   - [What You'll Need](#what-youll-need)
   - [Clone and run setup.sh](#clone-and-run-setupsh)
