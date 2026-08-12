@@ -14,7 +14,7 @@
         </div>
         <div class="col-auto">
             {% if not is_basic_user %}
-            <a href="{% url 'bambu_run:filament_update' filament.pk %}" class="btn btn-warning{% if not can_write %} disabled" aria-disabled="true" tabindex="-1" title="Read-only access{% endif %}">Edit</a>
+            <a href="{% url 'bambu_run:filament_update' filament.pk %}" class="btn btn-warning">Edit</a>
             {% endif %}
             <a href="{% url 'bambu_run:filament_list' %}" class="btn btn-secondary">Back to List</a>
         </div>
