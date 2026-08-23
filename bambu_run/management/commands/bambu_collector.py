@@ -14,7 +14,7 @@ import os
 import ssl
 import time
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Dict, Optional
 
 from django.core.management.base import BaseCommand, CommandError
@@ -72,9 +72,25 @@ class DeviceSession:
     last_gcode_state: Optional[str] = None
     last_subtask_name: Optional[str] = None
     trays_used: set = field(default_factory=set)
+    active_filament_segments: dict = field(default_factory=dict)
+    filament_segments: list = field(default_factory=list)
     error_count: int = 0
     success_count: int = 0
     mqtt_connect_errors: int = 0
+
+
+@dataclass
+class FilamentPrintSegment:
+    tray_id: int
+    ams_unit_id: Optional[int]
+    filament_id: int
+    start_line_number: Optional[int]
+    start_percent: Optional[int]
+    starting_percent: int
+    starting_weight_grams: Optional[int]
+    end_line_number: Optional[int] = None
+    end_percent: Optional[int] = None
+    ending_percent: Optional[int] = None
 
 
 class Command(BaseCommand):
@@ -107,6 +123,7 @@ class Command(BaseCommand):
         self.verbose = False
         self.disable_ssl_verify = False
         self.start_time = None
+        self._print_usage_cache = {}
 
     def handle(self, *args, **options):
         self.verbose = options["verbose"]
@@ -338,13 +355,77 @@ class Command(BaseCommand):
         color_hex = mqtt_color[:6] if len(mqtt_color) >= 6 else mqtt_color
         return f"#{color_hex.upper()}"
 
-    def _match_filament_to_inventory(self, tray_data):
+    def _clean_mqtt_identifier(self, value):
+        """Treat blank/all-zero identifiers from third-party trays as missing."""
+        if value is None:
+            return None
+        value = str(value).strip()
+        normalized = value.replace("-", "").replace(":", "").lower()
+        if not value or normalized in {"null", "none", "unknown", "n/a"}:
+            return None
+        if normalized and set(normalized) == {"0"}:
+            return None
+        return value
+
+    def _to_int(self, value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _valid_percent(self, value):
+        value = self._to_int(value)
+        if value is None or value < 0 or value > 100:
+            return None
+        return value
+
+    def _inventory_color_for_mqtt(self, filament):
+        if filament.color_hex:
+            return f"{filament.color_hex.lstrip('#').upper()}FF"
+        return "FFFFFFFF"
+
+    def _match_loaded_slot_filament(self, tray_data, printer=None):
+        """Match a manually assigned spool by physical AMS slot.
+
+        Third-party AMS trays often have no stable RFID UUID, so the manual
+        inventory assignment is the closest equivalent to SimplyPrint's
+        "assign spool to AMS slot" workflow.
+        """
+        from bambu_run.models import Filament
+
+        tray_id = self._to_int(tray_data.get('tray_id'))
+        if tray_id is None:
+            return None
+
+        qs = Filament.objects.filter(
+            is_loaded_in_ams=True,
+            current_tray_id=tray_id,
+        )
+        if printer is not None:
+            qs = qs.filter(current_printer=printer)
+        ams_unit_id = self._to_int(tray_data.get('ams_unit_id'))
+        if ams_unit_id is not None:
+            exact = qs.filter(ams_unit_id=ams_unit_id).order_by('-last_loaded_date', '-updated_at')
+            filament = exact.first()
+            if filament:
+                return filament
+
+            unspecified = qs.filter(ams_unit_id__isnull=True).order_by('-last_loaded_date', '-updated_at')
+            if unspecified.count() == 1:
+                return unspecified.first()
+            return None
+
+        if qs.count() == 1:
+            return qs.order_by('-last_loaded_date', '-updated_at').first()
+        return None
+
+    def _match_filament_to_inventory(self, tray_data, printer=None):
         from bambu_run.models import Filament
 
         tray_id = tray_data.get('tray_id')
-        tray_uuid = tray_data.get('tray_uuid')
-        tag_uid = tray_data.get('tag_uid')
-        tag_id = tray_data.get('tag_id')
+        tray_uuid = self._clean_mqtt_identifier(tray_data.get('tray_uuid'))
+        tag_uid = self._clean_mqtt_identifier(tray_data.get('tag_uid'))
+        tag_id = self._clean_mqtt_identifier(tray_data.get('tag_id'))
         type_val = tray_data.get('type')
         sub_type = tray_data.get('sub_type')
         color = tray_data.get('color')
@@ -370,19 +451,36 @@ class Command(BaseCommand):
                     logger.debug(f"Matched filament via tag_id: {tag_id}")
                 return filament, 'tag_id'
 
+        filament = self._match_loaded_slot_filament(tray_data, printer=printer)
+        if filament:
+            if self.verbose:
+                logger.debug(
+                    f"Matched manually loaded filament via slot: "
+                    f"unit={tray_data.get('ams_unit_id')} tray={tray_id}"
+                )
+            return filament, 'manual_loaded_slot'
+
         if type_val and color:
             query_filters = {'type': type_val, 'color': color}
             if sub_type:
                 query_filters['sub_type'] = sub_type
 
-            filament = Filament.objects.filter(
-                **query_filters, is_loaded_in_ams=False
-            ).order_by('remaining_percent', 'last_used').first()
+            filament = (
+                Filament.objects.filter(**query_filters, is_loaded_in_ams=False)
+                .order_by('remaining_percent', 'last_used')
+                .first()
+            )
 
-            if not filament:
-                filament = Filament.objects.filter(
-                    **query_filters
-                ).order_by('remaining_percent', 'last_used').first()
+            if not filament and printer is not None:
+                filament = (
+                    Filament.objects.filter(
+                        **query_filters,
+                        is_loaded_in_ams=True,
+                        current_printer=printer,
+                    )
+                    .order_by('remaining_percent', 'last_used')
+                    .first()
+                )
 
             if filament:
                 if self.verbose:
@@ -392,19 +490,21 @@ class Command(BaseCommand):
         if self.verbose:
             logger.info(f"No match found for tray {tray_id}. Auto-creating new filament...")
 
-        filament = self._auto_create_filament(tray_data)
+        filament = self._auto_create_filament(tray_data, printer=printer)
         return filament, 'auto_created'
 
-    def _auto_create_filament(self, tray_data):
+    def _auto_create_filament(self, tray_data, printer=None):
         from bambu_run.models import Filament, FilamentType
         from bambu_run.utils import strip_color_padding, match_filament_color, is_mqtt_color_transparent
 
-        tray_uuid = tray_data.get('tray_uuid')
-        tag_uid = tray_data.get('tag_uid')
+        tray_uuid = self._clean_mqtt_identifier(tray_data.get('tray_uuid'))
+        tag_uid = self._clean_mqtt_identifier(tray_data.get('tag_uid'))
         type_val = tray_data.get('type', 'Unknown')
         sub_type = tray_data.get('sub_type', '')
         mqtt_color = tray_data.get('color')
-        remain_percent = tray_data.get('remain_percent', 100)
+        remain_percent = self._valid_percent(tray_data.get('remain_percent'))
+        if remain_percent is None:
+            remain_percent = 100
         diameter = tray_data.get('tray_diameter', 1.75)
         initial_weight = tray_data.get('tray_weight', 1000)
 
@@ -456,6 +556,7 @@ class Command(BaseCommand):
             initial_weight_grams=initial_weight,
             remaining_percent=remain_percent,
             created_by='Auto Detection',
+            current_printer=printer,
             is_loaded_in_ams=True,
             current_tray_id=tray_data.get('tray_id'),
             ams_unit_id=tray_data.get('ams_unit_id'),
@@ -473,14 +574,15 @@ class Command(BaseCommand):
 
         return filament
 
-    def _update_filament_status(self, filament, tray_id, remain_percent, tray_data=None):
+    def _update_filament_status(self, filament, tray_id, remain_percent, tray_data=None, sync_remaining=True, printer=None):
         from bambu_run.models import Filament
 
         tray_data = tray_data or {}
         ams_unit_id = tray_data.get('ams_unit_id')
         ams_type_label = tray_data.get('ams_type', '') or ''
 
-        if filament.remaining_percent != remain_percent:
+        remain_percent = self._valid_percent(remain_percent)
+        if sync_remaining and remain_percent is not None and filament.remaining_percent != remain_percent:
             filament.remaining_percent = remain_percent
             filament.update_remaining_weight()
             filament.last_used = timezone.now()
@@ -489,6 +591,7 @@ class Command(BaseCommand):
 
         location_changed = (
             not filament.is_loaded_in_ams
+            or (printer is not None and filament.current_printer_id != printer.id)
             or filament.current_tray_id != tray_id
             or (ams_unit_id is not None and filament.ams_unit_id != ams_unit_id)
         )
@@ -497,13 +600,18 @@ class Command(BaseCommand):
             unload_qs = Filament.objects.filter(
                 is_loaded_in_ams=True, current_tray_id=tray_id
             ).exclude(id=filament.id)
+            if printer is not None:
+                unload_qs = unload_qs.filter(current_printer=printer)
             if ams_unit_id is not None:
                 unload_qs = unload_qs.filter(ams_unit_id=ams_unit_id)
             previous_filament = unload_qs.first()
 
             if previous_filament:
                 previous_filament.is_loaded_in_ams = False
+                previous_filament.current_printer = None
                 previous_filament.current_tray_id = None
+                previous_filament.ams_unit_id = None
+                previous_filament.ams_type = ''
                 previous_filament.save()
                 logger.info(
                     f"Auto-unloaded {previous_filament} from Tray {tray_id} "
@@ -511,6 +619,8 @@ class Command(BaseCommand):
                 )
 
             filament.is_loaded_in_ams = True
+            if printer is not None:
+                filament.current_printer = printer
             filament.current_tray_id = tray_id
             if ams_unit_id is not None:
                 filament.ams_unit_id = ams_unit_id
@@ -525,50 +635,130 @@ class Command(BaseCommand):
 
         filament.save()
 
+    def _snapshot_values_for_filament(self, filament, tray_data, match_method):
+        """Return display values for a snapshot, preferring manual inventory data."""
+        remain_percent = self._valid_percent(tray_data.get('remain_percent'))
+        if filament and match_method == 'manual_loaded_slot':
+            return {
+                'type': filament.type,
+                'sub_type': filament.sub_type,
+                'brand': filament.brand,
+                'color': self._inventory_color_for_mqtt(filament),
+                'remain_percent': filament.remaining_percent,
+            }
+
+        return {
+            'type': tray_data.get('type'),
+            'sub_type': tray_data.get('sub_type'),
+            'brand': tray_data.get('brand'),
+            'color': tray_data.get('color'),
+            'remain_percent': remain_percent,
+        }
+
     def _create_filament_snapshots(self, printer_metric, filaments_data, snapshot):
-        from bambu_run.models import FilamentSnapshot
+        from bambu_run.models import Filament, FilamentSnapshot
 
         ams_units = {
             u.get('unit_id'): u for u in snapshot.get('ams_units', [])
         }
+        represented_slots = set()
 
         for tray_data in filaments_data:
             tray_id = tray_data.get('tray_id')
             if tray_id is None:
                 continue
 
-            filament, match_method = self._match_filament_to_inventory(tray_data)
+            filament, match_method = self._match_filament_to_inventory(
+                tray_data,
+                printer=printer_metric.device,
+            )
+            unit_id_int = self._to_int(tray_data.get('ams_unit_id'))
+            if unit_id_int is None and filament and filament.ams_unit_id is not None:
+                unit_id_int = self._to_int(filament.ams_unit_id)
+
+            # Keep downstream status/snapshot code consistent when the printer
+            # reports tray data without the unit id but inventory has the manual
+            # AMS assignment.
+            tray_data = {
+                **tray_data,
+                'ams_unit_id': unit_id_int,
+            }
+            unit_data = ams_units.get(str(unit_id_int)) if unit_id_int is not None else {}
+            ams_type_label = (
+                tray_data.get('ams_type')
+                or (unit_data or {}).get('ams_type')
+                or (filament.ams_type if filament else '')
+                or ''
+            )
+            tray_data['ams_type'] = ams_type_label
+            represented_slots.add((unit_id_int, self._to_int(tray_id)))
 
             if filament:
                 remain_percent = tray_data.get('remain_percent')
-                if remain_percent is not None:
-                    self._update_filament_status(filament, tray_id, remain_percent, tray_data)
+                self._update_filament_status(
+                    filament,
+                    tray_id,
+                    remain_percent,
+                    tray_data,
+                    sync_remaining=match_method != 'manual_loaded_slot',
+                    printer=printer_metric.device,
+                )
 
-            # Locate the AMS unit this tray belongs to. Use the unit_id supplied
-            # by the snapshot directly (matches MQTT ams[i].id, including 128 for AMS HT)
-            # — the legacy `tray_id // 4` math breaks for AMS HT.
-            unit_id_int = tray_data.get('ams_unit_id')
-            unit_data = ams_units.get(str(unit_id_int)) if unit_id_int is not None else {}
+            snapshot_values = self._snapshot_values_for_filament(filament, tray_data, match_method)
 
+            FilamentSnapshot.objects.create(
+                printer_metric=printer_metric,
+                filament=filament,
+                tray_id=self._to_int(tray_id),
+                ams_unit_id=unit_id_int,
+                ams_type=ams_type_label,
+                slot_name=tray_data.get('slot'),
+                type=snapshot_values['type'],
+                sub_type=snapshot_values['sub_type'],
+                brand=snapshot_values['brand'],
+                color=snapshot_values['color'],
+                remain_percent=snapshot_values['remain_percent'],
+                k_value=tray_data.get('k'),
+                temp=self._to_decimal(unit_data.get('temp')),
+                humidity=unit_data.get('humidity'),
+                tag_uid=self._clean_mqtt_identifier(tray_data.get('tag_uid')),
+                tray_uuid=self._clean_mqtt_identifier(tray_data.get('tray_uuid')),
+                state=tray_data.get('state'),
+                auto_matched=bool(filament) and match_method != 'manual_loaded_slot',
+                match_method=match_method
+            )
+
+        available_units = set(ams_units.keys())
+        for filament in (
+            Filament.objects.filter(
+                is_loaded_in_ams=True,
+                current_printer=printer_metric.device,
+            )
+            .exclude(current_tray_id__isnull=True)
+        ):
+            tray_id = self._to_int(filament.current_tray_id)
+            unit_id_int = self._to_int(filament.ams_unit_id)
+            if (unit_id_int, tray_id) in represented_slots:
+                continue
+            if available_units and unit_id_int is not None and str(unit_id_int) not in available_units:
+                continue
+
+            unit_data = ams_units.get(str(unit_id_int), {})
             FilamentSnapshot.objects.create(
                 printer_metric=printer_metric,
                 filament=filament,
                 tray_id=tray_id,
                 ams_unit_id=unit_id_int,
-                ams_type=tray_data.get('ams_type', '') or '',
-                slot_name=tray_data.get('slot'),
-                type=tray_data.get('type'),
-                sub_type=tray_data.get('sub_type'),
-                color=tray_data.get('color'),
-                remain_percent=tray_data.get('remain_percent'),
-                k_value=tray_data.get('k'),
+                ams_type=filament.ams_type or unit_data.get('ams_type', '') or '',
+                type=filament.type,
+                sub_type=filament.sub_type,
+                brand=filament.brand,
+                color=self._inventory_color_for_mqtt(filament),
+                remain_percent=filament.remaining_percent,
                 temp=self._to_decimal(unit_data.get('temp')),
                 humidity=unit_data.get('humidity'),
-                tag_uid=tray_data.get('tag_uid'),
-                tray_uuid=tray_data.get('tray_uuid'),
-                state=tray_data.get('state'),
-                auto_matched=bool(filament),
-                match_method=match_method
+                auto_matched=False,
+                match_method='manual_loaded_slot',
             )
 
     def _update_hotends(self, printer, printer_metric, hotends_data):
@@ -636,6 +826,7 @@ class Command(BaseCommand):
                         session.trays_used.add(tray_id)
                 except (ValueError, TypeError):
                     pass
+            self._record_active_filament_segments(session, metric, snapshot)
 
         if self._is_print_ending(session, gcode_state) and session.current_print_job:
             self._finalize_print_job(session, metric, snapshot)
@@ -651,6 +842,52 @@ class Command(BaseCommand):
     def _is_print_ending(self, session, gcode_state):
         ending_states = ['FINISH', 'FAILED']
         return gcode_state in ending_states and session.last_gcode_state not in ending_states
+
+    def _record_active_filament_segments(self, session, metric, snapshot):
+        tray_id = self._to_int(snapshot.get('tray_now'))
+        if tray_id is None or tray_id == 255:
+            return
+
+        current_line = self._to_int(snapshot.get('print_line_number'))
+        current_percent = self._valid_percent(snapshot.get('print_percent'))
+        snapshots = metric.filament_snapshots.filter(
+            tray_id=tray_id,
+            filament__isnull=False,
+        )
+
+        for filament_snapshot in snapshots:
+            slot_key = (filament_snapshot.ams_unit_id, filament_snapshot.tray_id)
+            active_segment = session.active_filament_segments.get(slot_key)
+
+            if active_segment and active_segment.filament_id == filament_snapshot.filament_id:
+                active_segment.ending_percent = filament_snapshot.remain_percent
+                continue
+
+            if active_segment:
+                self._close_filament_segment(
+                    active_segment,
+                    line_number=current_line,
+                    percent=current_percent,
+                    ending_percent=0,
+                )
+                session.filament_segments.append(active_segment)
+
+            session.active_filament_segments[slot_key] = FilamentPrintSegment(
+                tray_id=filament_snapshot.tray_id,
+                ams_unit_id=filament_snapshot.ams_unit_id,
+                filament_id=filament_snapshot.filament_id,
+                start_line_number=current_line,
+                start_percent=current_percent,
+                starting_percent=filament_snapshot.remain_percent or 100,
+                starting_weight_grams=filament_snapshot.filament.remaining_weight_grams,
+                ending_percent=filament_snapshot.remain_percent,
+            )
+
+    def _close_filament_segment(self, segment, line_number=None, percent=None, ending_percent=None):
+        segment.end_line_number = line_number
+        segment.end_percent = percent
+        if ending_percent is not None:
+            segment.ending_percent = ending_percent
 
     def _finalize_print_job(self, session, metric, snapshot):
         from bambu_run.models import FilamentUsage
@@ -674,6 +911,8 @@ class Command(BaseCommand):
             logger.warning(f"No start_metric for job {job.id}, skipping filament usage")
         elif not session.trays_used:
             logger.warning(f"No trays tracked for job {job.project_name}, skipping filament usage")
+        elif self._finalize_segmented_filament_usage(session, job, metric, snapshot):
+            pass
         else:
             # A bare tray_id (from `tray_now`) doesn't identify which physical AMS
             # unit was active when multiple units share the same slot numbering —
@@ -703,6 +942,14 @@ class Command(BaseCommand):
                     created_usages.append(usage)
 
             for usage in created_usages:
+                if usage.consumed_grams is None or usage.consumed_grams <= 0:
+                    local_grams = self._local_file_usage_grams_for_usage(job, usage, created_usages)
+                    if local_grams:
+                        self._apply_grams_usage_to_filament(usage, local_grams)
+                    cloud_grams = None if local_grams else self._cloud_usage_grams_for_usage(job, usage, created_usages)
+                    if cloud_grams:
+                        self._apply_grams_usage_to_filament(usage, cloud_grams)
+
                 usage.is_primary = len(created_usages) == 1
                 usage.save()
 
@@ -720,6 +967,283 @@ class Command(BaseCommand):
 
         session.current_print_job = None
         session.trays_used = set()
+        session.active_filament_segments = {}
+        session.filament_segments = []
+
+    def _finalize_segmented_filament_usage(self, session, job, metric, snapshot):
+        for segment in session.active_filament_segments.values():
+            self._close_filament_segment(
+                segment,
+                line_number=self._to_int(snapshot.get('print_line_number')),
+                percent=self._valid_percent(snapshot.get('print_percent')),
+                ending_percent=segment.ending_percent,
+            )
+            session.filament_segments.append(segment)
+        session.active_filament_segments = {}
+
+        segments = [
+            segment for segment in session.filament_segments
+            if segment.filament_id and segment.tray_id in session.trays_used
+        ]
+        changed_slots = {
+            (segment.ams_unit_id, segment.tray_id)
+            for segment in segments
+        }
+        has_filament_change = any(
+            len({
+                segment.filament_id for segment in segments
+                if (segment.ams_unit_id, segment.tray_id) == slot_key
+            }) > 1
+            for slot_key in changed_slots
+        )
+        if not has_filament_change:
+            return False
+
+        first_filament = self._filament_for_segment(segments[0]) if segments else None
+        total_grams = self._total_usage_grams_for_job(job, first_filament)
+        if not total_grams:
+            logger.warning(
+                f"Filament changed during job {job.id}, but no local/cloud total usage was available"
+            )
+            return False
+
+        parsed = self._parsed_print_usage_for_job(job)
+        allocated_grams = 0.0
+        created_usage = False
+
+        for index, segment in enumerate(segments):
+            is_final_segment = index == len(segments) - 1
+            consumed_grams = None
+            known_runout = not is_final_segment and segment.starting_weight_grams is not None
+
+            if known_runout:
+                consumed_grams = min(float(segment.starting_weight_grams), max(0.0, total_grams - allocated_grams))
+                allocated_grams += consumed_grams
+            elif is_final_segment:
+                consumed_grams = max(0.0, total_grams - allocated_grams)
+            else:
+                filament = self._filament_for_segment(segment)
+                grams_until_change = self._local_file_grams_until_line(
+                    job,
+                    segment.end_line_number,
+                    parsed=parsed,
+                    filament=filament,
+                )
+                if grams_until_change is not None:
+                    allocated_grams = max(allocated_grams, min(float(total_grams), grams_until_change))
+
+            usage = self._create_segment_usage(job, segment)
+            created_usage = True
+
+            if consumed_grams is not None and consumed_grams > 0:
+                self._apply_grams_usage_to_filament(usage, consumed_grams)
+                allocated_grams = max(allocated_grams, min(float(total_grams), allocated_grams))
+            elif not is_final_segment:
+                self._mark_segment_filament_depleted(usage)
+
+            usage.is_primary = len(segments) == 1
+            usage.save()
+
+        return created_usage
+
+    def _create_segment_usage(self, job, segment):
+        from bambu_run.models import FilamentUsage
+
+        filament = self._filament_for_segment(segment)
+        return FilamentUsage.objects.create(
+            print_job=job,
+            filament=filament,
+            tray_id=segment.tray_id,
+            ams_unit_id=segment.ams_unit_id,
+            starting_percent=segment.starting_percent,
+            ending_percent=segment.ending_percent,
+            consumed_percent=None,
+            consumed_grams=None,
+            is_primary=False,
+        )
+
+    def _filament_for_segment(self, segment):
+        from bambu_run.models import Filament
+
+        return Filament.objects.get(pk=segment.filament_id)
+
+    def _mark_segment_filament_depleted(self, usage):
+        filament = usage.filament
+        filament.remaining_weight_grams = 0 if filament.initial_weight_grams else filament.remaining_weight_grams
+        filament.remaining_percent = 0
+        filament.last_used = timezone.now()
+        filament.save(update_fields=['remaining_weight_grams', 'remaining_percent', 'last_used'])
+        usage.ending_percent = 0
+
+    def _total_usage_grams_for_job(self, job, filament=None):
+        parsed = self._parsed_print_usage_for_job(job)
+        if parsed:
+            if parsed.total_grams:
+                return float(parsed.total_grams)
+            if parsed.per_tool_grams:
+                return float(sum(parsed.per_tool_grams))
+            if parsed.total_mm and filament:
+                return self._grams_for_filament_length(filament, parsed.total_mm)
+            if parsed.per_tool_mm and filament:
+                return self._grams_for_filament_length(filament, sum(parsed.per_tool_mm))
+
+        cloud_task = job.cloud_task
+        if cloud_task and cloud_task.weight_grams and cloud_task.weight_grams > 0:
+            return float(cloud_task.weight_grams)
+        return None
+
+    def _local_file_grams_until_line(self, job, line_number, parsed=None, filament=None):
+        parsed = parsed or self._parsed_print_usage_for_job(job)
+        if not parsed or not parsed.has_line_usage:
+            return None
+
+        mm_until_line = parsed.mm_until_line(line_number)
+        total_mm = parsed.cumulative_total_mm
+        if mm_until_line is None or not total_mm:
+            return None
+
+        if parsed.total_grams:
+            return float(parsed.total_grams) * (mm_until_line / total_mm)
+        if parsed.per_tool_grams:
+            return float(sum(parsed.per_tool_grams)) * (mm_until_line / total_mm)
+        if filament:
+            return self._grams_for_filament_length(filament, mm_until_line)
+        return None
+
+    def _local_file_usage_grams_for_usage(self, job, usage, created_usages):
+        """Use a mounted local print file as an offline usage source.
+
+        Without the slicer-to-AMS mapping, a local file only proves which physical
+        spool to charge when the collector observed exactly one used slot.
+        """
+        if len(created_usages) != 1:
+            return None
+
+        parsed = self._parsed_print_usage_for_job(job)
+        if not parsed:
+            return None
+
+        if parsed.total_grams:
+            return parsed.total_grams
+        if parsed.per_tool_grams:
+            return sum(parsed.per_tool_grams)
+        if parsed.total_mm:
+            return self._grams_for_filament_length(usage.filament, parsed.total_mm)
+        if parsed.per_tool_mm:
+            return self._grams_for_filament_length(usage.filament, sum(parsed.per_tool_mm))
+        return None
+
+    def _parsed_print_usage_for_job(self, job):
+        if job.id in self._print_usage_cache:
+            return self._print_usage_cache[job.id]
+
+        from bambu_run.print_usage import find_print_file, parse_print_file_usage
+
+        print_file = find_print_file(job, app_settings.PRINT_FILE_DIRS)
+        if not print_file:
+            self._print_usage_cache[job.id] = None
+            return None
+
+        try:
+            parsed = parse_print_file_usage(print_file)
+        except Exception as e:
+            logger.warning(f"Local print usage parse failed for job #{job.id}: {e}")
+            parsed = None
+
+        if parsed and parsed.has_usage:
+            logger.info(f"Job #{job.id}: local print usage parsed from {parsed.source_path}")
+            self._print_usage_cache[job.id] = parsed
+            return parsed
+
+        self._print_usage_cache[job.id] = None
+        return None
+
+    def _grams_for_filament_length(self, filament, length_mm):
+        from bambu_run.print_usage import grams_from_length
+
+        return grams_from_length(
+            length_mm,
+            diameter_mm=filament.diameter or 1.75,
+            material_type=filament.type,
+        )
+
+    def _cloud_usage_grams_for_usage(self, job, usage, created_usages):
+        cloud_task = job.cloud_task
+        if not cloud_task:
+            return None
+
+        for entry in cloud_task.ams_detail_mapping or []:
+            grams = self._to_decimal(entry.get('weight'))
+            if not grams or grams <= 0:
+                continue
+            if self._cloud_mapping_matches_usage(entry, usage):
+                return grams
+
+        if len(created_usages) == 1 and cloud_task.weight_grams and cloud_task.weight_grams > 0:
+            return cloud_task.weight_grams
+        return None
+
+    def _cloud_mapping_matches_usage(self, entry, usage):
+        slot_id = self._to_int(entry.get('slotId'))
+        ams_id = self._to_int(entry.get('amsId'))
+        if slot_id is not None:
+            if usage.tray_id != slot_id:
+                return False
+            return usage.ams_unit_id is None or ams_id is None or usage.ams_unit_id == ams_id
+
+        absolute_slot = self._to_int(entry.get('ams'))
+        if absolute_slot is None:
+            return False
+        if absolute_slot >= 128:
+            return usage.ams_unit_id == absolute_slot and usage.tray_id == 0
+        return usage.ams_unit_id == absolute_slot // 4 and usage.tray_id == absolute_slot % 4
+
+    def _apply_grams_usage_to_filament(self, usage, grams):
+        grams_decimal = self._quantize_decimal(grams)
+        if grams_decimal <= 0:
+            return
+
+        filament = usage.filament
+        usage.consumed_grams = grams_decimal
+
+        if filament.initial_weight_grams:
+            current_weight = filament.remaining_weight_grams
+            if current_weight is None:
+                current_weight = self._quantize_decimal(
+                    Decimal(str(filament.initial_weight_grams))
+                    * Decimal(str(filament.remaining_percent))
+                    / Decimal("100")
+                )
+
+            new_weight = max(Decimal("0"), Decimal(str(current_weight)) - grams_decimal)
+            filament.remaining_weight_grams = new_weight
+            filament.remaining_percent = self._quantize_decimal(
+                max(
+                    Decimal("0"),
+                    min(Decimal("100"), new_weight / Decimal(str(filament.initial_weight_grams)) * Decimal("100")),
+                )
+            )
+            filament.last_used = timezone.now()
+            filament.save(update_fields=['remaining_weight_grams', 'remaining_percent', 'last_used'])
+
+            usage.consumed_percent = self._quantize_decimal(
+                max(
+                    Decimal("0"),
+                    grams_decimal / Decimal(str(filament.initial_weight_grams)) * Decimal("100"),
+                )
+            )
+            usage.ending_percent = filament.remaining_percent
+
+            end_metric = usage.print_job.end_metric
+            if end_metric:
+                end_metric.filament_snapshots.filter(
+                    filament=filament,
+                    tray_id=usage.tray_id,
+                    ams_unit_id=usage.ams_unit_id,
+                ).update(remain_percent=filament.remaining_percent)
+
+    def _quantize_decimal(self, value):
+        return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     def _collect_printer_data(self, session: "DeviceSession"):
         try:
@@ -730,6 +1254,15 @@ class Command(BaseCommand):
                 if session.mqtt_connect_errors <= 5 or self.verbose:
                     logger.warning(
                         f"[{session.device_id}] MQTT not connected yet or no data available "
+                        f"(attempt {session.mqtt_connect_errors})"
+                )
+                return
+
+            if not self._snapshot_has_observed_data(snapshot):
+                session.mqtt_connect_errors += 1
+                if session.mqtt_connect_errors <= 5 or self.verbose:
+                    logger.warning(
+                        f"[{session.device_id}] MQTT snapshot had no observable printer data "
                         f"(attempt {session.mqtt_connect_errors})"
                     )
                 return
@@ -793,8 +1326,7 @@ class Command(BaseCommand):
                 )
 
                 filaments_data = snapshot.get('filaments', [])
-                if filaments_data:
-                    self._create_filament_snapshots(metric, filaments_data, snapshot)
+                self._create_filament_snapshots(metric, filaments_data, snapshot)
 
                 hotends_data = snapshot.get('hotends', [])
                 if hotends_data:
@@ -817,6 +1349,25 @@ class Command(BaseCommand):
             logger.error(f"[{session.device_id}] Error collecting printer data (total errors: {session.error_count}): {e}")
             if self.verbose:
                 logger.exception("Detailed traceback:")
+
+    def _snapshot_has_observed_data(self, snapshot):
+        if snapshot.get("gcode_state"):
+            return True
+        if snapshot.get("filaments") or snapshot.get("ams_units") or snapshot.get("external_spool"):
+            return True
+        if snapshot.get("hotends") or snapshot.get("hms"):
+            return True
+        if snapshot.get("chamber_light") not in (None, "", "unknown"):
+            return True
+        if snapshot.get("wifi_signal_dbm"):
+            return True
+
+        scalar_fields = (
+            "nozzle_temp", "nozzle_target_temp", "bed_temp", "bed_target_temp",
+            "chamber_temp", "print_percent", "remaining_time_min", "layer_num",
+            "total_layer_num", "print_line_number",
+        )
+        return any(snapshot.get(field) is not None for field in scalar_fields)
 
     def _to_decimal(self, value) -> Optional[Decimal]:
         if value is None:

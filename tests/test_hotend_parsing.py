@@ -1,4 +1,4 @@
-from bambu_run.mqtt_client import PrinterState
+from bambu_run.mqtt_client import BambuPrinter, PrinterState
 
 
 def real_nozzle_payload():
@@ -98,3 +98,71 @@ def test_snapshot_hotends_empty_list_when_no_nozzle_payload():
     snapshot = state.get_snapshot()
 
     assert snapshot["hotends"] == []
+
+
+def test_empty_printer_accumulator_returns_no_snapshot():
+    printer = BambuPrinter(token="token", device_id="SERIAL-A")
+
+    assert printer.get_snapshot() is None
+
+
+def test_absent_temperature_fields_remain_unknown_not_zero():
+    state = PrinterState.from_mqtt_data({"print": {"gcode_state": "IDLE"}})
+    snapshot = state.get_snapshot()
+
+    assert snapshot["nozzle_temp"] is None
+    assert snapshot["bed_temp"] is None
+    assert snapshot["print_percent"] is None
+
+
+def test_snapshot_keeps_ams_tray_with_display_info_even_without_type():
+    state = PrinterState.from_mqtt_data({
+        "print": {
+            "gcode_state": "IDLE",
+            "ams": {
+                "ams": [{
+                    "id": "0",
+                    "info": "10001003",
+                    "humidity": 5,
+                    "temp": 22.5,
+                    "tray": [{
+                        "id": "1",
+                        "tray_color": "FFFFFFFF",
+                        "remain": -1,
+                        "tray_info_idx": "GFS00",
+                    }],
+                }],
+            },
+        }
+    })
+
+    snapshot = state.get_snapshot()
+
+    assert snapshot["ams_units"][0]["ams_type"] == "AMS 2 Pro"
+    assert snapshot["filaments"] == [{
+        "tray_id": "1",
+        "slot": "",
+        "type": "",
+        "sub_type": "",
+        "color": "FFFFFFFF",
+        "remain_percent": -1,
+        "tray_weight": 0,
+        "tray_diameter": 1.75,
+        "nozzle_temp_min": 0,
+        "nozzle_temp_max": 0,
+        "tag_uid": "",
+        "state": 0,
+        "tray_uuid": "",
+        "k": 0.0,
+        "n": 0.0,
+        "cali_idx": -1,
+        "total_len": 0,
+        "tray_info_idx": "GFS00",
+        "tray_time": 0,
+        "tray_bed_temp": 0,
+        "bed_temp_type": 0,
+        "cols": [],
+        "ams_unit_id": 0,
+        "ams_info": "10001003",
+        "ams_type": "AMS 2 Pro",
+    }]

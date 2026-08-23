@@ -13,6 +13,7 @@
         <div class="card-body">
             <form method="post">
                 {% csrf_token %}
+                {{ form.remaining_source }}
 
                 <h5>Identification</h5>
                 <div class="row mb-3">
@@ -113,15 +114,29 @@
                 </div>
 
                 <div class="row mb-3">
-                    <div class="col-md-6">
+                    <div class="col-md-2">
                         <div class="form-check">
                             {{ form.is_loaded_in_ams }}
                             <label class="form-check-label">Loaded in AMS</label>
                         </div>
                     </div>
-                    <div class="col-md-6">
-                        <label class="form-label">AMS Tray ID (0-3)</label>
+                    <div class="col-md-3">
+                        <label class="form-label">Printer</label>
+                        {{ form.current_printer }}
+                    </div>
+                    <div class="col-md-3">
+                        <label class="form-label">AMS Unit ID</label>
+                        {{ form.ams_unit_id }}
+                        <small class="form-text text-muted">Usually 0; AMS HT is often 128</small>
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">AMS Type</label>
+                        {{ form.ams_type }}
+                    </div>
+                    <div class="col-md-2">
+                        <label class="form-label">AMS Tray ID</label>
                         {{ form.current_tray_id }}
+                        <small class="form-text text-muted">0-3 for AMS / AMS 2 Pro</small>
                     </div>
                 </div>
 
@@ -226,5 +241,6 @@
 {% block extra_js %}
 {# Server-side data consumed by filament_form.js #}
 <script type="application/json" id="filament-type-data">{{ filament_type_map|safe }}</script>
+<script type="application/json" id="ams-slot-data">{{ ams_slot_map|safe }}</script>
 <script src="{% static 'bambu_run/js/filament_form.js' %}"></script>
 {% endblock %}

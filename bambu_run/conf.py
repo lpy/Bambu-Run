@@ -7,6 +7,7 @@ Override in your Django settings.py:
 """
 
 from django.conf import settings
+import os
 
 
 def get_setting(name, default):
@@ -50,6 +51,15 @@ class _Settings:
     @property
     def AUTO_CREATE_BRAND(self):
         return get_setting("BAMBU_RUN_AUTO_CREATE_BRAND", "Bambu Lab")
+
+    @property
+    def PRINT_FILE_DIRS(self):
+        configured = get_setting("BAMBU_RUN_PRINT_FILE_DIRS", None)
+        if configured is None:
+            configured = os.environ.get("BAMBU_RUN_PRINT_FILE_DIRS", "")
+        if isinstance(configured, str):
+            return [p for p in configured.split(os.pathsep) if p]
+        return list(configured or [])
 
     # MCP Server settings
     @property

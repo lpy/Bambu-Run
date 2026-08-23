@@ -105,6 +105,9 @@ LOGOUT_REDIRECT_URL = "/accounts/login/"
 # Bambu Run settings
 BAMBU_RUN_TIMEZONE = os.environ.get("TIMEZONE", "UTC")
 BAMBU_RUN_BASE_TEMPLATE = "standalone_base.html"
+BAMBU_RUN_PRINT_FILE_DIRS = [
+    p for p in os.environ.get("BAMBU_RUN_PRINT_FILE_DIRS", "").split(os.pathsep) if p
+]
 
 # Printer connection — read from environment
 PRINTER_IP = os.environ.get("PRINTER_IP", "")

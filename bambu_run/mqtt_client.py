@@ -124,6 +124,19 @@ class FilamentTray:
     bed_temp_type: int = 0
     cols: List[str] = field(default_factory=list)
 
+    @property
+    def has_filament_info(self) -> bool:
+        """True when the tray payload has enough data to display on the dashboard."""
+        return any([
+            self.tray_type,
+            self.tray_sub_brands,
+            self.tray_color,
+            self.tag_uid,
+            self.tray_uuid,
+            self.tray_info_idx,
+            self.cols,
+        ]) or self.remain_percent not in (None, -1)
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FilamentTray":
         """Create FilamentTray from MQTT tray data"""
@@ -463,6 +476,20 @@ class PrinterState:
     _raw_data: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     @staticmethod
+    def _float_or_none(data: Dict[str, Any], key: str) -> Optional[float]:
+        value = data.get(key)
+        if value in (None, ""):
+            return None
+        return float(value)
+
+    @staticmethod
+    def _int_or_none(data: Dict[str, Any], key: str) -> Optional[int]:
+        value = data.get(key)
+        if value in (None, ""):
+            return None
+        return int(value)
+
+    @staticmethod
     def _parse_wifi_signal(signal_str: str) -> int:
         """Parse WiFi signal string (e.g., '-34dBm') to integer dBm"""
         if not signal_str:
@@ -527,21 +554,21 @@ class PrinterState:
             sequence_id=str(print_data.get("sequence_id", "")),
             nozzle_temp=(
                 nozzle_temp_right if nozzle_temp_right is not None
-                else float(print_data.get("nozzle_temper", 0.0))
+                else cls._float_or_none(print_data, "nozzle_temper")
             ),
             nozzle_target_temp=(
                 nozzle_target_temp_right if nozzle_target_temp_right is not None
-                else float(print_data.get("nozzle_target_temper", 0.0))
+                else cls._float_or_none(print_data, "nozzle_target_temper")
             ),
-            bed_temp=float(print_data.get("bed_temper", 0.0)),
-            bed_target_temp=float(print_data.get("bed_target_temper", 0.0)),
-            chamber_temp=float(print_data.get("chamber_temper", 0.0)),
+            bed_temp=cls._float_or_none(print_data, "bed_temper"),
+            bed_target_temp=cls._float_or_none(print_data, "bed_target_temper"),
+            chamber_temp=cls._float_or_none(print_data, "chamber_temper"),
             gcode_state=print_data.get("gcode_state", ""),
-            print_percent=int(print_data.get("mc_percent", 0)),
-            remaining_time_min=int(print_data.get("mc_remaining_time", 0)),
-            layer_num=int(print_data.get("layer_num", 0)),
-            total_layer_num=int(print_data.get("total_layer_num", 0)),
-            print_line_number=int(print_data.get("mc_print_line_number", 0)),
+            print_percent=cls._int_or_none(print_data, "mc_percent"),
+            remaining_time_min=cls._int_or_none(print_data, "mc_remaining_time"),
+            layer_num=cls._int_or_none(print_data, "layer_num"),
+            total_layer_num=cls._int_or_none(print_data, "total_layer_num"),
+            print_line_number=cls._int_or_none(print_data, "mc_print_line_number"),
             gcode_file=print_data.get("gcode_file", ""),
             subtask_name=print_data.get("subtask_name", ""),
             subtask_id=print_data.get("subtask_id", ""),
@@ -554,14 +581,14 @@ class PrinterState:
             heatbreak_fan_speed=int(print_data.get("heatbreak_fan_speed", 0)),
             wifi_signal=wifi_signal,
             wifi_signal_dbm=cls._parse_wifi_signal(wifi_signal),
-            nozzle_diameter=float(print_data.get("nozzle_diameter", 0.4)),
+            nozzle_diameter=cls._float_or_none(print_data, "nozzle_diameter"),
             nozzle_type=print_data.get("nozzle_type", ""),
             nozzle_temp_left=nozzle_temp_left,
             nozzle_target_temp_left=nozzle_target_temp_left,
             # Diameter/type per side: H2C currently uses uniform nozzles, so reuse top-level
             # values. If a future probe shows per-side diameter/type variance, plumb it from
             # `device.nozzle.info[]` cross-referenced against `device.extruder.info[i].id`.
-            nozzle_diameter_left=float(print_data.get("nozzle_diameter", 0.4)) if nozzle_temp_left is not None else None,
+            nozzle_diameter_left=cls._float_or_none(print_data, "nozzle_diameter") if nozzle_temp_left is not None else None,
             nozzle_type_left=print_data.get("nozzle_type", "") if nozzle_temp_left is not None else None,
             home_flag=int(print_data.get("home_flag", 0)),
             hw_switch_state=int(print_data.get("hw_switch_state", 0)),
@@ -592,11 +619,17 @@ class PrinterState:
         """Get a simplified snapshot for database logging."""
         snapshot = {
             "timestamp": self.timestamp,
-            "nozzle_temp": round(self.nozzle_temp, 2),
-            "nozzle_target_temp": round(self.nozzle_target_temp, 2),
-            "bed_temp": round(self.bed_temp, 2),
-            "bed_target_temp": round(self.bed_target_temp, 2),
-            "chamber_temp": round(self.chamber_temp, 2),
+            "nozzle_temp": round(self.nozzle_temp, 2) if self.nozzle_temp is not None else None,
+            "nozzle_target_temp": (
+                round(self.nozzle_target_temp, 2)
+                if self.nozzle_target_temp is not None else None
+            ),
+            "bed_temp": round(self.bed_temp, 2) if self.bed_temp is not None else None,
+            "bed_target_temp": (
+                round(self.bed_target_temp, 2)
+                if self.bed_target_temp is not None else None
+            ),
+            "chamber_temp": round(self.chamber_temp, 2) if self.chamber_temp is not None else None,
             "nozzle_diameter": self.nozzle_diameter,
             "nozzle_type": self.nozzle_type,
             "nozzle_temp_left": (
@@ -668,7 +701,7 @@ class PrinterState:
                     unit_id_int = None
                 ams_type_label = ams_type_from_info(unit.info)
                 for tray in unit.trays:
-                    if tray.tray_type:
+                    if tray.has_filament_info:
                         filaments.append({
                             "tray_id": tray.tray_id,
                             "slot": tray.tray_id_name,
@@ -1021,8 +1054,10 @@ class BambuPrinter:
         """Get current accumulated printer state"""
         return self._accumulator.get_state()
 
-    def get_snapshot(self) -> Dict[str, Any]:
+    def get_snapshot(self) -> Optional[Dict[str, Any]]:
         """Get simplified snapshot for database logging"""
+        if self._accumulator.update_count == 0:
+            return None
         return self._accumulator.get_state().get_snapshot()
 
     @property

@@ -22,11 +22,9 @@
                         <div style="width: 100px; height: 100px; background-color: {{ object.get_hex_color }}; border-radius: 8px; border: 2px solid #ddd;"></div>
                     </div>
                     <div class="col-md-10">
-                        <p><strong>Color Name:</strong> {{ object.color_name }}</p>
+                        <p><strong>Color Name:</strong> {{ object.display_name }}</p>
+                        <p><strong>Finish:</strong> {{ object.finish }}</p>
                         <p><strong>Hex Code:</strong> <span class="font-monospace">{{ object.get_hex_color }}</span></p>
-                        <p><strong>Type:</strong> {{ object.filament_type }}</p>
-                        <p><strong>Sub Type:</strong> {{ object.filament_sub_type|default:"-" }}</p>
-                        <p><strong>Brand:</strong> {{ object.brand }}</p>
                     </div>
                 </div>
             </div>

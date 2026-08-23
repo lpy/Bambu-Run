@@ -31,59 +31,35 @@ def strip_color_padding(mqtt_color):
 
 def match_filament_color(filament_type, filament_sub_type, color_code, brand='Bambu Lab'):
     """
-    Match a FilamentColor from database based on type, sub_type, color_code, and brand
+    Match a global FilamentColor from the database by hex code.
 
     Returns:
         FilamentColor instance or None
     """
     from .models import FilamentColor
 
-    if not all([filament_type, color_code]):
+    if not color_code:
         return None
 
-    # Try exact match first (with sub_type)
-    if filament_sub_type:
-        color_match = FilamentColor.objects.filter(
-            filament_type=filament_type,
-            filament_sub_type=filament_sub_type,
-            color_code=color_code,
-            brand=brand
-        ).first()
-
-        if color_match:
-            return color_match
-
-    # Try match without sub_type (more flexible)
-    color_match = FilamentColor.objects.filter(
-        filament_type=filament_type,
-        color_code=color_code,
-        brand=brand
-    ).first()
+    color_match = FilamentColor.objects.filter(color_code=color_code).order_by('finish', 'color_name').first()
 
     return color_match
 
 
 def match_and_update_filament_color(filament_color):
     """
-    Retroactively update all Filament spools that match this FilamentColor
+    Retroactively update all Filament spools that match this FilamentColor hex.
 
     Returns:
         Number of Filament records updated
     """
     from .models import Filament
 
-    query_filters = {
-        'type': filament_color.filament_type,
-        'brand': filament_color.brand,
-    }
-
     color_hex = f"#{filament_color.color_code}"
-    query_filters['color_hex'] = color_hex
-
-    if filament_color.filament_sub_type:
-        query_filters['sub_type'] = filament_color.filament_sub_type
-
-    matching_filaments = Filament.objects.filter(**query_filters)
-    updated_count = matching_filaments.update(color=filament_color.color_name)
+    matching_filaments = Filament.objects.filter(color_hex=color_hex)
+    updated_count = matching_filaments.update(
+        color=filament_color.display_name,
+        is_transparent=filament_color.is_transparent,
+    )
 
     return updated_count

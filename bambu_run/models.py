@@ -1,3 +1,5 @@
+from decimal import Decimal, ROUND_HALF_UP
+
 from django.db import models
 from django.utils import timezone
 
@@ -16,6 +18,26 @@ AMS_TYPE_CHOICES = [
     ("AMS", "AMS"),
     ("AMS 2 Pro", "AMS 2 Pro"),
     ("AMS HT", "AMS HT"),
+]
+
+FILAMENT_COLOR_FINISH_CHOICES = [
+    ("Default", "Default"),
+    ("Matte", "Matte"),
+    ("Satin", "Satin"),
+    ("Silk", "Silk"),
+    ("Glossy", "Glossy"),
+    ("Transparent", "Transparent"),
+    ("Translucent", "Translucent"),
+    ("Metallic", "Metallic"),
+    ("Sparkle", "Sparkle / Glitter"),
+    ("Galaxy", "Galaxy"),
+    ("Marble", "Marble"),
+    ("Glow", "Glow"),
+    ("Wood", "Wood"),
+    ("Carbon Fiber", "Carbon Fiber"),
+    ("Filled", "Filled / Composite"),
+    ("Dual Color", "Dual Color"),
+    ("Tri Color", "Tri Color"),
 ]
 
 
@@ -325,7 +347,7 @@ class FilamentType(models.Model):
 
 
 class FilamentColor(models.Model):
-    """Master database of Bambu Lab filament colors for auto-matching"""
+    """Global color registry for filament spool appearance."""
 
     color_code = models.CharField(
         max_length=6,
@@ -335,27 +357,11 @@ class FilamentColor(models.Model):
         max_length=100,
         help_text="Human-readable color name (e.g., 'Black', 'Orange')"
     )
-
-    filament_type_fk = models.ForeignKey(
-        'FilamentType', null=True, blank=True, on_delete=models.SET_NULL,
-        related_name='colors',
-        help_text="Link to FilamentType registry"
-    )
-
-    filament_type = models.CharField(
-        max_length=50,
-        help_text="Base material type: PLA, PETG, ABS, TPU, etc."
-    )
-    filament_sub_type = models.CharField(
-        max_length=100,
-        null=True,
-        blank=True,
-        help_text="Material sub-type: 'PLA Basic', 'PLA Matte', 'ABS GF', etc."
-    )
-    brand = models.CharField(
-        max_length=100,
-        default='Bambu Lab',
-        help_text="Manufacturer name"
+    finish = models.CharField(
+        max_length=32,
+        choices=FILAMENT_COLOR_FINISH_CHOICES,
+        default="Default",
+        help_text="Visual finish or appearance family (Default, Matte, Silk, Transparent, etc.)"
     )
     is_transparent = models.BooleanField(
         default=False,
@@ -369,16 +375,19 @@ class FilamentColor(models.Model):
         db_table = "infrastructure_filament_color"
         verbose_name = "Filament Color"
         verbose_name_plural = "Filament Colors"
-        ordering = ['filament_type', 'filament_sub_type', 'color_name']
+        ordering = ['finish', 'color_name']
         indexes = [
-            models.Index(fields=['color_code', 'filament_type', 'filament_sub_type', 'brand']),
-            models.Index(fields=['filament_type']),
+            models.Index(fields=['finish', 'color_name'], name='infra_color_finish_name_idx'),
+            models.Index(fields=['color_code'], name='infra_color_code_idx'),
         ]
-        unique_together = [['color_code', 'filament_type', 'filament_sub_type', 'brand']]
+        unique_together = [['finish', 'color_name', 'color_code']]
 
     def __str__(self):
-        sub_type_info = f" {self.filament_sub_type}" if self.filament_sub_type else ""
-        return f"{self.filament_type}{sub_type_info}: {self.color_name} (#{self.color_code})"
+        return f"{self.display_name} (#{self.color_code})"
+
+    @property
+    def display_name(self):
+        return f"{self.finish}:{self.color_name}"
 
     def get_hex_color(self):
         """Return color code with # prefix for display"""
@@ -447,16 +456,26 @@ class Filament(models.Model):
     )
 
     # Current status
-    remaining_percent = models.IntegerField(
+    remaining_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
         default=100,
         help_text="Estimated remaining filament (0-100%)"
     )
-    remaining_weight_grams = models.IntegerField(
+    remaining_weight_grams = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
         null=True, blank=True,
         help_text="Calculated remaining weight"
     )
 
     # Current location in AMS
+    current_printer = models.ForeignKey(
+        'Printer', on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='loaded_filaments',
+        help_text="Printer whose AMS/external spool currently has this inventory spool loaded"
+    )
     is_loaded_in_ams = models.BooleanField(
         default=False,
         help_text="Is this spool currently loaded in AMS?"
@@ -505,6 +524,10 @@ class Filament(models.Model):
             models.Index(fields=['tray_uuid']),
             models.Index(fields=['tag_uid']),
             models.Index(fields=['tag_id']),
+            models.Index(
+                fields=['current_printer', 'is_loaded_in_ams'],
+                name='infra_fila_current_5eb7f3_idx',
+            ),
             models.Index(fields=['is_loaded_in_ams', 'current_tray_id']),
             models.Index(fields=['remaining_percent']),
             models.Index(fields=['created_by']),
@@ -517,9 +540,11 @@ class Filament(models.Model):
     def update_remaining_weight(self):
         """Calculate remaining weight based on percentage"""
         if self.initial_weight_grams:
-            self.remaining_weight_grams = int(
-                self.initial_weight_grams * (self.remaining_percent / 100.0)
-            )
+            self.remaining_weight_grams = (
+                Decimal(str(self.initial_weight_grams))
+                * Decimal(str(self.remaining_percent))
+                / Decimal("100")
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 class FilamentSnapshot(models.Model):
@@ -561,7 +586,12 @@ class FilamentSnapshot(models.Model):
         help_text="Deprecated: MQTT doesn't provide brand. Use Filament.brand instead."
     )
     color = models.CharField(max_length=50, null=True, blank=True)
-    remain_percent = models.IntegerField(null=True, blank=True)
+    remain_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
     k_value = models.DecimalField(
         max_digits=6, decimal_places=4, null=True, blank=True
     )
@@ -744,14 +774,24 @@ class FilamentUsage(models.Model):
         help_text="Which physical AMS unit the slot belongs to (matches MQTT ams[i].id; 128 = AMS HT)"
     )
 
-    starting_percent = models.IntegerField(help_text="Filament remaining % at job start")
-    ending_percent = models.IntegerField(
+    starting_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        help_text="Filament remaining % at job start",
+    )
+    ending_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
         null=True, blank=True, help_text="Filament remaining % at job end"
     )
-    consumed_percent = models.IntegerField(
+    consumed_percent = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
         null=True, blank=True, help_text="Amount consumed during print"
     )
-    consumed_grams = models.IntegerField(
+    consumed_grams = models.DecimalField(
+        max_digits=8,
+        decimal_places=2,
         null=True, blank=True, help_text="Estimated grams consumed"
     )
 
@@ -775,11 +815,15 @@ class FilamentUsage(models.Model):
     def calculate_consumed(self):
         """Calculate consumed amount"""
         if self.ending_percent is not None:
-            self.consumed_percent = self.starting_percent - self.ending_percent
+            self.consumed_percent = (
+                Decimal(str(self.starting_percent)) - Decimal(str(self.ending_percent))
+            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             if self.filament.initial_weight_grams:
-                self.consumed_grams = int(
-                    self.filament.initial_weight_grams * (self.consumed_percent / 100.0)
-                )
+                self.consumed_grams = (
+                    Decimal(str(self.filament.initial_weight_grams))
+                    * Decimal(str(self.consumed_percent))
+                    / Decimal("100")
+                ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 class Hotend(models.Model):

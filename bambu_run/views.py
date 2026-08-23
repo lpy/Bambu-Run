@@ -1,4 +1,5 @@
 from datetime import timedelta, datetime
+from decimal import Decimal, InvalidOperation
 from django.views.generic import TemplateView, View, ListView, CreateView, UpdateView, DetailView, DeleteView
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.shortcuts import get_object_or_404
@@ -38,6 +39,12 @@ _MAX_CHART_POINTS = 1440
 # Fallback window for requests that don't specify a full date range. Without it a
 # bare API call scans the entire metrics table.
 _DEFAULT_WINDOW = timedelta(hours=24)
+
+
+def numeric_json_value(value):
+    if value is None:
+        return None
+    return float(value)
 
 
 def resolve_printer_from_request(pk):
@@ -93,6 +100,37 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
         """Return (start_dt, end_dt) for the dashboard query. Override for custom date logic."""
         time_24h_ago = timezone.now() - timedelta(hours=24)
         return time_24h_ago, None  # None means "now"
+
+    def _valid_display_percent(self, value):
+        try:
+            value = Decimal(str(value))
+        except (TypeError, ValueError, InvalidOperation):
+            return None
+        if Decimal("0") <= value <= Decimal("100"):
+            return value
+        return None
+
+    def _ams_units_meta_by_id(self, ams_units):
+        units_meta = {}
+        for unit in ams_units or []:
+            unit_id = unit.get('unit_id')
+            units_meta[unit_id] = unit
+            try:
+                units_meta[int(unit_id)] = unit
+            except (TypeError, ValueError):
+                pass
+        return units_meta
+
+    def _ams_display_humidity(self, unit_meta):
+        """Return the RH percentage Bambu Studio shows, not the AMS humidity level."""
+        for key in ('humidity_raw', 'humidity'):
+            try:
+                value = int(unit_meta.get(key))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= value <= 100:
+                return value
+        return None
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -203,21 +241,52 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
         stats = {}
         if latest_metric:
             filaments_list = []
+            units_meta = self._ams_units_meta_by_id(latest_metric.ams_units)
             try:
                 # `.all()` (not `.select_related()`) so the prefetch cache is used
                 filament_snapshots = latest_metric.filament_snapshots.all()
                 for snapshot in filament_snapshots:
+                    display_type = snapshot.type or 'Unknown'
+                    display_brand = snapshot.sub_type or snapshot.brand or 'Unknown'
+                    display_color = snapshot.color or 'FFFFFFFF'
+                    display_remaining = self._valid_display_percent(snapshot.remain_percent)
+                    display_ams_unit_id = snapshot.ams_unit_id
+                    display_ams_type = snapshot.ams_type or ''
+                    use_inventory_display = (
+                        snapshot.filament
+                        and snapshot.match_method != 'auto_created'
+                    )
+                    if snapshot.filament:
+                        if display_ams_unit_id is None:
+                            display_ams_unit_id = snapshot.filament.ams_unit_id
+                        if not display_ams_type:
+                            display_ams_type = snapshot.filament.ams_type or ''
+                    if display_ams_unit_id is not None and not display_ams_type:
+                        unit_meta = units_meta.get(display_ams_unit_id, {})
+                        display_ams_type = unit_meta.get('ams_type') or ''
                     filament_dict = {
                         'tray_id': snapshot.tray_id,
-                        'type': snapshot.type or 'Unknown',
-                        'brand': snapshot.sub_type or 'Unknown',
-                        'color': snapshot.color or 'FFFFFFFF',
-                        'remain_percent': snapshot.remain_percent or 0,
-                        'ams_unit_id': snapshot.ams_unit_id,
-                        'ams_type': snapshot.ams_type or '',
+                        'type': display_type,
+                        'brand': display_brand,
+                        'color': display_color,
+                        'remain_percent': display_remaining,
+                        'remain_percent_known': display_remaining is not None,
+                        'ams_unit_id': display_ams_unit_id,
+                        'ams_type': display_ams_type,
                     }
-                    if snapshot.filament:
+                    if use_inventory_display:
+                        filament_dict['type'] = snapshot.filament.type or display_type
+                        filament_dict['brand'] = snapshot.filament.brand or display_brand
+                        filament_dict['color'] = (
+                            f"{snapshot.filament.color_hex.lstrip('#').upper()}FF"
+                            if snapshot.filament.color_hex else display_color
+                        )
+                        filament_dict['remain_percent'] = self._valid_display_percent(
+                            snapshot.filament.remaining_percent
+                        )
+                        filament_dict['remain_percent_known'] = filament_dict['remain_percent'] is not None
                         filament_dict['color_name'] = snapshot.filament.color
+                    if snapshot.filament:
                         filament_dict['filament_pk'] = snapshot.filament.pk
                         filament_dict['is_transparent'] = snapshot.filament.is_transparent
                     filaments_list.append(filament_dict)
@@ -226,10 +295,6 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
 
             # Build a lookup from unit_id → AMS unit metadata (humidity, temp, info code)
             # first so we can enrich blank ams_type values derived from old snapshots.
-            units_meta = {
-                u.get('unit_id'): u for u in (latest_metric.ams_units or [])
-            }
-
             # Distinct AMS units in this snapshot. ams_type stored on FilamentSnapshot
             # may be blank for rows written before the multi-AMS deploy — fall back to
             # re-deriving from the unit's info code so labels always show correctly.
@@ -240,7 +305,7 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
                 if uid is not None and uid not in seen_units:
                     label = f.get('ams_type') or ''
                     if not label:
-                        unit_meta = units_meta.get(str(uid), {})
+                        unit_meta = units_meta.get(uid, {})
                         label = _ams_type_from_info(unit_meta.get('info', ''))
                     seen_units[uid] = label
             ams_units_list = [
@@ -260,12 +325,14 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
                     'filaments': ungrouped,
                 })
             for uid, label in sorted(seen_units.items()):
-                unit_meta = units_meta.get(str(uid), {})
+                unit_meta = units_meta.get(uid, {})
                 ams_groups.append({
                     'unit_id': uid,
                     'ams_type': label,
                     'label': f"{label or 'AMS'} (Unit {uid})",
-                    'humidity': unit_meta.get('humidity'),
+                    'humidity': self._ams_display_humidity(unit_meta),
+                    'humidity_level': unit_meta.get('humidity'),
+                    'humidity_raw': unit_meta.get('humidity_raw'),
                     'temp': unit_meta.get('temp'),
                     'filaments': [f for f in filaments_list if f.get('ams_unit_id') == uid],
                 })
@@ -289,8 +356,8 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
                     job_display_name = active_job.display_name
 
             stats = {
-                "nozzle_temp": float(latest_metric.nozzle_temp) if latest_metric.nozzle_temp else 0,
-                "nozzle_target_temp": float(latest_metric.nozzle_target_temp) if latest_metric.nozzle_target_temp else 0,
+                "nozzle_temp": float(latest_metric.nozzle_temp) if latest_metric.nozzle_temp is not None else None,
+                "nozzle_target_temp": float(latest_metric.nozzle_target_temp) if latest_metric.nozzle_target_temp is not None else None,
                 "nozzle_diameter": float(latest_metric.nozzle_diameter) if latest_metric.nozzle_diameter else None,
                 "nozzle_type": latest_metric.nozzle_type or "",
                 "nozzle_temp_left": float(latest_metric.nozzle_temp_left) if latest_metric.nozzle_temp_left is not None else None,
@@ -298,9 +365,9 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
                 "nozzle_diameter_left": float(latest_metric.nozzle_diameter_left) if latest_metric.nozzle_diameter_left is not None else None,
                 "nozzle_type_left": latest_metric.nozzle_type_left or "",
                 "is_dual_nozzle": latest_metric.nozzle_temp_left is not None,
-                "bed_temp": float(latest_metric.bed_temp) if latest_metric.bed_temp else 0,
-                "chamber_temp": float(latest_metric.chamber_temp) if latest_metric.chamber_temp else 0,
-                "print_percent": latest_metric.print_percent or 0,
+                "bed_temp": float(latest_metric.bed_temp) if latest_metric.bed_temp is not None else None,
+                "chamber_temp": float(latest_metric.chamber_temp) if latest_metric.chamber_temp is not None else None,
+                "print_percent": latest_metric.print_percent,
                 "gcode_state": latest_metric.gcode_state or "Unknown",
                 "print_type": latest_metric.print_type or "idle",
                 "subtask_name": subtask_name,
@@ -424,7 +491,7 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
                         'start_idx': idx,
                     }
 
-                remain_percent = snapshot.remain_percent or 0
+                remain_percent = numeric_json_value(snapshot.remain_percent) or 0
                 filament_data[unique_key]['remain_data'][idx] = remain_percent
 
         for idx, metric in enumerate(metrics):
@@ -588,7 +655,7 @@ class PrinterDataAPIView(LoginRequiredMixin, View):
                             'remain_data': [None] * total_points,
                             'start_idx': idx,
                         }
-                    filament_data[unique_key]['remain_data'][idx] = snap.remain_percent or 0
+                    filament_data[unique_key]['remain_data'][idx] = numeric_json_value(snap.remain_percent) or 0
 
                 external = m.external_spool or {}
                 if external.get('type'):
@@ -689,7 +756,7 @@ class FilamentUsageDataAPIView(LoginRequiredMixin, View):
 
             data = {
                 "timestamps": [s.printer_metric.timestamp.astimezone(tz).strftime('%Y-%m-%d %H:%M') for s in snapshots],
-                "remaining": [s.remain_percent for s in snapshots],
+                "remaining": [numeric_json_value(s.remain_percent) for s in snapshots],
                 "fallback_used": fallback_used,
             }
 
@@ -710,9 +777,19 @@ class FilamentListView(LoginRequiredMixin, ListView):
     template_name = 'bambu_run/filament_list.html'
     context_object_name = 'filaments'
     paginate_by = 20
+    sort_fields = {
+        'color': ['color'],
+        'brand': ['brand'],
+        'type': ['type'],
+        'sub_type': ['sub_type'],
+        'remaining': ['remaining_percent'],
+        'location': ['is_loaded_in_ams', 'current_printer__name', 'ams_unit_id', 'current_tray_id'],
+        'created_by': ['created_by'],
+        'last_used': ['last_used'],
+    }
 
     def get_queryset(self):
-        queryset = Filament.objects.all()
+        queryset = Filament.objects.select_related('current_printer')
 
         filament_type = self.request.GET.get('type')
         if filament_type:
@@ -736,11 +813,53 @@ class FilamentListView(LoginRequiredMixin, ListView):
                 Q(type__icontains=search)
             )
 
+        sort_key = self.request.GET.get('sort')
+        sort_dir = self.request.GET.get('dir')
+        sort_fields = self.sort_fields.get(sort_key)
+        if sort_fields:
+            if sort_dir == 'desc':
+                sort_fields = [f'-{field}' for field in sort_fields]
+            queryset = queryset.order_by(*sort_fields)
+
         return queryset
+
+    def _sort_url(self, column):
+        params = self.request.GET.copy()
+        params.pop('page', None)
+        params['sort'] = column
+        params['dir'] = (
+            'desc'
+            if self.request.GET.get('sort') == column and self.request.GET.get('dir') != 'desc'
+            else 'asc'
+        )
+        return f"?{params.urlencode()}"
+
+    def _page_url(self, page_number):
+        params = self.request.GET.copy()
+        params['page'] = page_number
+        return f"?{params.urlencode()}"
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context['bambu_run_base_template'] = app_settings.BASE_TEMPLATE
+        current_sort = self.request.GET.get('sort')
+        if current_sort not in self.sort_fields:
+            current_sort = ''
+        current_dir = self.request.GET.get('dir') if self.request.GET.get('dir') in {'asc', 'desc'} else 'asc'
+        context['current_sort'] = current_sort
+        context['current_dir'] = current_dir
+        context['sort_urls'] = {
+            column: self._sort_url(column)
+            for column in self.sort_fields
+        }
+        if context.get('is_paginated'):
+            page_obj = context['page_obj']
+            context['page_urls'] = {
+                'first': self._page_url(1),
+                'previous': self._page_url(page_obj.previous_page_number()) if page_obj.has_previous() else '',
+                'next': self._page_url(page_obj.next_page_number()) if page_obj.has_next() else '',
+                'last': self._page_url(page_obj.paginator.num_pages),
+            }
         context['total_spools'] = Filament.objects.count()
         context['loaded_spools'] = Filament.objects.filter(is_loaded_in_ams=True).count()
         context['low_filaments'] = Filament.objects.filter(remaining_percent__lt=20).count()
@@ -763,16 +882,73 @@ def _filament_type_map():
     }
 
 
+def _tray_ids_for_ams_type(ams_type):
+    if ams_type == 'AMS HT':
+        return [0]
+    return [0, 1, 2, 3]
+
+
+def _latest_ams_units_for_form():
+    """Return AMS unit choices from the most recent metric for active printers."""
+    units_by_id = {}
+    for printer in Printer.objects.filter(is_active=True):
+        metric = (
+            PrinterMetrics.objects.filter(device=printer)
+            .order_by('-timestamp')
+            .first()
+        )
+        ams_units = metric.ams_units if metric else []
+
+        for unit in ams_units or []:
+            raw_unit_id = unit.get('unit_id')
+            try:
+                unit_id = int(raw_unit_id)
+            except (TypeError, ValueError):
+                continue
+
+            ams_type = unit.get('ams_type') or ''
+            if not ams_type:
+                from .models import ams_type_from_info
+                ams_type = ams_type_from_info(unit.get('info', ''))
+
+            units_by_id[(printer.pk, unit_id)] = {
+                'printer_id': printer.pk,
+                'printer_name': printer.name,
+                'unit_id': unit_id,
+                'ams_type': ams_type,
+                'label': f"{printer.name} - {ams_type or 'AMS'} (Unit {unit_id})",
+                'tray_ids': _tray_ids_for_ams_type(ams_type),
+            }
+
+        if not ams_units:
+            units_by_id[(printer.pk, 0)] = {
+                'printer_id': printer.pk,
+                'printer_name': printer.name,
+                'unit_id': 0,
+                'ams_type': 'AMS',
+                'label': f"{printer.name} - AMS (Unit 0)",
+                'tray_ids': _tray_ids_for_ams_type('AMS'),
+            }
+
+    return [units_by_id[key] for key in sorted(units_by_id)]
+
+
 class FilamentCreateView(LoginRequiredMixin, CreateView):
     model = Filament
     form_class = FilamentForm
     template_name = 'bambu_run/filament_form.html'
     success_url = reverse_lazy('bambu_run:filament_list')
 
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['ams_units'] = _latest_ams_units_for_form()
+        return kwargs
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context['bambu_run_base_template'] = app_settings.BASE_TEMPLATE
         context['filament_type_map'] = json.dumps(_filament_type_map())
+        context['ams_slot_map'] = json.dumps(_latest_ams_units_for_form())
         return context
 
     def form_valid(self, form):
@@ -786,10 +962,16 @@ class FilamentUpdateView(LoginRequiredMixin, UpdateView):
     template_name = 'bambu_run/filament_form.html'
     success_url = reverse_lazy('bambu_run:filament_list')
 
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['ams_units'] = _latest_ams_units_for_form()
+        return kwargs
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context['bambu_run_base_template'] = app_settings.BASE_TEMPLATE
         context['filament_type_map'] = json.dumps(_filament_type_map())
+        context['ams_slot_map'] = json.dumps(_latest_ams_units_for_form())
         return context
 
     def form_valid(self, form):
@@ -842,7 +1024,7 @@ class FilamentColorListView(LoginRequiredMixin, ListView):
     paginate_by = 50
 
     def get_queryset(self):
-        return FilamentColor.objects.all().order_by('filament_type', 'filament_sub_type', 'color_name')
+        return FilamentColor.objects.all().order_by('finish', 'color_name')
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)

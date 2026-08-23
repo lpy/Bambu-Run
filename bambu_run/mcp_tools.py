@@ -261,10 +261,15 @@ def list_filaments(type=None, brand=None, color=None, loaded_in_ams=None, low_fi
         if f.color_hex:
             color_display += f" ({f.color_hex})"
         last_used = _local_dt(f.last_used, "%Y-%m-%d") if f.last_used else "-"
+        location = "No"
+        if f.is_loaded_in_ams:
+            printer_name = f.current_printer.name if f.current_printer else "Unknown printer"
+            unit = f" unit {f.ams_unit_id}" if f.ams_unit_id is not None else ""
+            location = f"{printer_name}{unit} tray {f.current_tray_id}"
         lines.append(
             f"| {f.id} | {f.brand} | {f.sub_type or f.type} | "
             f"{color_display} | {f.remaining_percent}% | "
-            f"{'Yes' if f.is_loaded_in_ams else 'No'} | {last_used} |"
+            f"{location} | {last_used} |"
         )
     return "\n".join(lines)
 
@@ -285,7 +290,12 @@ def get_filament_detail(filament_id):
     lines.append(f"**Remaining**: {f.remaining_percent}%")
     if f.remaining_weight_grams:
         lines.append(f"**Remaining Weight**: {f.remaining_weight_grams}g / {f.initial_weight_grams or '?'}g")
-    lines.append(f"**In AMS**: {'Yes (slot ' + str(f.current_tray_id) + ')' if f.is_loaded_in_ams else 'No'}")
+    if f.is_loaded_in_ams:
+        printer_name = f.current_printer.name if f.current_printer else "Unknown printer"
+        unit = f" unit {f.ams_unit_id}" if f.ams_unit_id is not None else ""
+        lines.append(f"**In AMS**: {printer_name}{unit} tray {f.current_tray_id}")
+    else:
+        lines.append("**In AMS**: No")
     lines.append(f"**Created By**: {f.created_by}")
     if f.tray_uuid:
         lines.append(f"**Serial**: {_redact(f.tray_uuid)}")
@@ -605,10 +615,15 @@ def find_compatible_filament(type, min_remaining_percent=10, color=None):
     lines.append("| ID | Brand | Sub-type | Color | Remaining | In AMS |")
     lines.append("|----|-------|----------|-------|-----------|--------|")
     for f in filaments:
+        location = "No"
+        if f.is_loaded_in_ams:
+            printer_name = f.current_printer.name if f.current_printer else "Unknown printer"
+            unit = f" unit {f.ams_unit_id}" if f.ams_unit_id is not None else ""
+            location = f"{printer_name}{unit} tray {f.current_tray_id}"
         lines.append(
             f"| {f.id} | {f.brand} | {f.sub_type or f.type} | "
             f"{f.color} | {f.remaining_percent}% | "
-            f"{'Yes' if f.is_loaded_in_ams else 'No'} |"
+            f"{location} |"
         )
     return "\n".join(lines)
 
@@ -667,12 +682,11 @@ def resource_filament_colors():
 
     lines = ["# Filament Colors", ""]
     lines.append(f"*Showing up to 100 of {FilamentColor.objects.count()}*\n")
-    lines.append("| Color | Hex | Type | Sub-type | Brand |")
-    lines.append("|-------|-----|------|----------|-------|")
+    lines.append("| Color | Finish | Hex |")
+    lines.append("|-------|--------|-----|")
     for c in colors:
         lines.append(
-            f"| {c.color_name} | #{c.color_code} | {c.filament_type} | "
-            f"{c.filament_sub_type or '-'} | {c.brand} |"
+            f"| {c.display_name} | {c.finish} | #{c.color_code} |"
         )
     return "\n".join(lines)
 

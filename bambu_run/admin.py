@@ -63,9 +63,9 @@ class FilamentTypeAdmin(admin.ModelAdmin):
 class FilamentAdmin(admin.ModelAdmin):
     list_display = (
         'brand', 'type', 'sub_type', 'color', 'remaining_percent',
-        'is_loaded_in_ams', 'current_tray_id', 'last_used'
+        'is_loaded_in_ams', 'current_printer', 'current_tray_id', 'last_used'
     )
-    list_filter = ('type', 'brand', 'is_loaded_in_ams')
+    list_filter = ('type', 'brand', 'is_loaded_in_ams', 'current_printer')
     search_fields = ('brand', 'color', 'type', 'tag_id')
     readonly_fields = ('created_at', 'updated_at', 'last_used')
 
@@ -76,7 +76,8 @@ class FilamentAdmin(admin.ModelAdmin):
         }),
         ('Current Status', {
             'fields': ('remaining_percent', 'remaining_weight_grams',
-                       'is_loaded_in_ams', 'current_tray_id', 'last_loaded_date')
+                       'is_loaded_in_ams', 'current_printer', 'current_tray_id',
+                       'ams_unit_id', 'ams_type', 'last_loaded_date')
         }),
         ('Purchase Info', {'fields': ('purchase_date', 'purchase_price', 'supplier', 'notes')}),
         ('Timestamps', {'fields': ('created_at', 'updated_at', 'last_used')}),

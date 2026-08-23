@@ -47,8 +47,8 @@
                                 <svg class="icon" style="width: 1.25rem; height: 1.25rem;"><use href="{% static 'bambu_run/vendors/coreui-icons-free.svg' %}#cil-arrow-thick-left"></use></svg>
                                 Left Nozzle
                             </div>
-                            <div class="stat-value">{{ stats.nozzle_temp_left|floatformat:1 }}&deg;C</div>
-                            <div class="text-muted small">target {{ stats.nozzle_target_temp_left|floatformat:0 }}&deg;C
+                            <div class="stat-value">{% if stats.nozzle_temp_left != None %}{{ stats.nozzle_temp_left|floatformat:1 }}&deg;C{% else %}--{% endif %}</div>
+                            <div class="text-muted small">target {% if stats.nozzle_target_temp_left != None %}{{ stats.nozzle_target_temp_left|floatformat:0 }}&deg;C{% else %}--{% endif %}
                                 {% if stats.nozzle_type_left %}· Nozzle {{ stats.nozzle_type_left }}{% endif %}</div>
                         </div>
                         <i class="bi bi-thermometer-high" style="font-size: 2rem; opacity: 0.3;"></i>
@@ -66,8 +66,8 @@
                                 Right Nozzle
                                 <svg class="icon" style="width: 1.25rem; height: 1.25rem;"><use href="{% static 'bambu_run/vendors/coreui-icons-free.svg' %}#cil-arrow-thick-right"></use></svg>
                             </div>
-                            <div class="stat-value">{{ stats.nozzle_temp|floatformat:1 }}&deg;C</div>
-                            <div class="text-muted small">target {{ stats.nozzle_target_temp|floatformat:0 }}&deg;C
+                            <div class="stat-value">{% if stats.nozzle_temp != None %}{{ stats.nozzle_temp|floatformat:1 }}&deg;C{% else %}--{% endif %}</div>
+                            <div class="text-muted small">target {% if stats.nozzle_target_temp != None %}{{ stats.nozzle_target_temp|floatformat:0 }}&deg;C{% else %}--{% endif %}
                                 {% if stats.nozzle_type %}· Nozzle {{ stats.nozzle_type }}{% endif %}</div>
                         </div>
                         <i class="bi bi-thermometer-high" style="font-size: 2rem; opacity: 0.3;"></i>
@@ -83,7 +83,7 @@
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
                             <div class="stat-label">Nozzle Temp</div>
-                            <div class="stat-value">{{ stats.nozzle_temp|floatformat:1 }}&deg;C</div>
+                            <div class="stat-value">{% if stats.nozzle_temp != None %}{{ stats.nozzle_temp|floatformat:1 }}&deg;C{% else %}--{% endif %}</div>
                         </div>
                         <i class="bi bi-thermometer-high" style="font-size: 2rem; opacity: 0.3;"></i>
                     </div>
@@ -99,7 +99,7 @@
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
                             <div class="stat-label">Bed Temp</div>
-                            <div class="stat-value">{{ stats.bed_temp|floatformat:1 }}&deg;C</div>
+                            <div class="stat-value">{% if stats.bed_temp != None %}{{ stats.bed_temp|floatformat:1 }}&deg;C{% else %}--{% endif %}</div>
                         </div>
                         <i class="bi bi-thermometer-half" style="font-size: 2rem; opacity: 0.3;"></i>
                     </div>
@@ -114,7 +114,7 @@
                     <div class="d-flex justify-content-between align-items-start">
                         <div>
                             <div class="stat-label">Print Progress</div>
-                            <div class="stat-value">{{ stats.print_percent }}%</div>
+                            <div class="stat-value">{% if stats.print_percent != None %}{{ stats.print_percent }}%{% else %}--{% endif %}</div>
                         </div>
                         <i class="bi bi-pie-chart-fill" style="font-size: 2rem; opacity: 0.3;"></i>
                     </div>
@@ -210,11 +210,17 @@
                                             {% if filament.color_name %}<p class="mb-1 small text-body-secondary">{{ filament.color_name }}</p>{% endif %}
                                             <div class="d-flex justify-content-between align-items-center mb-2">
                                                 <span class="small">Remaining</span>
-                                                <span class="badge filament-badge">{{ filament.remain_percent }}%</span>
+                                                {% if filament.remain_percent_known %}
+                                                <span class="badge filament-badge">{{ filament.remain_percent|floatformat:"-2" }}%</span>
+                                                {% else %}
+                                                <span class="badge filament-badge">Unknown</span>
+                                                {% endif %}
                                             </div>
+                                            {% if filament.remain_percent_known %}
                                             <div class="progress" style="height: 10px; background-color: rgba(0,0,0,0.1);">
                                                 <div class="progress-bar filament-progress" role="progressbar" style="width: {{ filament.remain_percent }}%;" aria-valuenow="{{ filament.remain_percent }}" aria-valuemin="0" aria-valuemax="100"></div>
                                             </div>
+                                            {% endif %}
                                         </div>
                                     </div>
                                 </div>

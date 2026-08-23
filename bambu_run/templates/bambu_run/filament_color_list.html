@@ -6,7 +6,7 @@
     <div class="row mb-4">
         <div class="col-md-8">
             <h1>Filament Color Database</h1>
-            <p class="text-muted">Manage filament colors for auto-matching</p>
+            <p class="text-muted">Manage global filament colors and finishes</p>
         </div>
         <div class="col-md-4 text-end">
             {% if not is_basic_user %}
@@ -42,11 +42,9 @@
                     <thead>
                         <tr>
                             <th class="align-middle">Color Preview</th>
+                            <th class="align-middle">Finish</th>
                             <th class="align-middle">Color Name</th>
                             <th class="align-middle">Hex Code</th>
-                            <th class="align-middle">Type</th>
-                            <th class="align-middle">Sub Type</th>
-                            <th class="align-middle">Brand</th>
                             <th class="align-middle">Actions</th>
                         </tr>
                     </thead>
@@ -60,7 +58,8 @@
                                 <div style="width: 50px; height: 50px; background-color: {{ color.get_hex_color }}; border-radius: 4px; border: 2px solid #ddd;"></div>
                                 {% endif %}
                             </td>
-                            <td class="align-middle"><strong>{{ color.color_name }}</strong></td>
+                            <td class="align-middle"><span class="badge bg-secondary">{{ color.finish }}</span></td>
+                            <td class="align-middle"><strong>{{ color.display_name }}</strong></td>
                             <td class="align-middle">
                                 {% if color.is_transparent %}
                                 <span class="text-muted fst-italic">Clear / Transparent</span>
@@ -68,17 +67,6 @@
                                 <span class="font-monospace">{{ color.get_hex_color }}</span>
                                 {% endif %}
                             </td>
-                            <td class="align-middle">
-                                <span class="badge bg-secondary">{{ color.filament_type }}</span>
-                            </td>
-                            <td class="align-middle">
-                                {% if color.filament_sub_type %}
-                                    <span class="badge bg-info">{{ color.filament_sub_type }}</span>
-                                {% else %}
-                                    <span class="text-muted">-</span>
-                                {% endif %}
-                            </td>
-                            <td class="align-middle">{{ color.brand }}</td>
                             <td class="align-middle">
                                 {% if not is_basic_user %}
                                 <a href="{% url 'bambu_run:filament_color_update' color.pk %}" class="btn btn-sm btn-warning">Edit</a>
@@ -88,7 +76,7 @@
                         </tr>
                         {% empty %}
                         <tr>
-                            <td colspan="7" class="text-center text-muted">
+                            <td colspan="5" class="text-center text-muted">
                                 No colors found. <a href="{% url 'bambu_run:filament_color_create' %}">Add your first color!</a>
                             </td>
                         </tr>

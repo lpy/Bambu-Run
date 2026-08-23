@@ -59,6 +59,10 @@
     <div class="card mb-4">
         <div class="card-body">
             <form method="get" class="row g-3">
+                {% if current_sort %}
+                <input type="hidden" name="sort" value="{{ current_sort }}">
+                <input type="hidden" name="dir" value="{{ current_dir }}">
+                {% endif %}
                 <div class="col-md-3">
                     <input type="text" name="search" class="form-control" placeholder="Search..." value="{{ request.GET.search }}">
                 </div>
@@ -100,34 +104,52 @@
                 <table class="table table-hover">
                     <thead>
                         <tr>
-                            <th class="align-middle">SN</th>
-                            <th class="align-middle">Color</th>
-                            <th class="align-middle">Brand</th>
-                            <th class="align-middle">Type</th>
-                            <th class="align-middle">Sub Type</th>
-                            <th class="align-middle">Remaining</th>
-                            <th class="align-middle">Location</th>
-                            <th class="align-middle">Created By</th>
-                            <th class="align-middle">Last Used</th>
+                            <th class="align-middle">
+                                <a href="{{ sort_urls.color }}" class="link-body-emphasis text-decoration-none">
+                                    Color{% if current_sort == 'color' %} <i class="bi bi-sort-{% if current_dir == 'desc' %}down{% else %}up{% endif %}"></i>{% endif %}
+                                </a>
+                            </th>
+                            <th class="align-middle">
+                                <a href="{{ sort_urls.brand }}" class="link-body-emphasis text-decoration-none">
+                                    Brand{% if current_sort == 'brand' %} <i class="bi bi-sort-{% if current_dir == 'desc' %}down{% else %}up{% endif %}"></i>{% endif %}
+                                </a>
+                            </th>
+                            <th class="align-middle">
+                                <a href="{{ sort_urls.type }}" class="link-body-emphasis text-decoration-none">
+                                    Type{% if current_sort == 'type' %} <i class="bi bi-sort-{% if current_dir == 'desc' %}down{% else %}up{% endif %}"></i>{% endif %}
+                                </a>
+                            </th>
+                            <th class="align-middle">
+                                <a href="{{ sort_urls.sub_type }}" class="link-body-emphasis text-decoration-none">
+                                    Sub Type{% if current_sort == 'sub_type' %} <i class="bi bi-sort-{% if current_dir == 'desc' %}down{% else %}up{% endif %}"></i>{% endif %}
+                                </a>
+                            </th>
+                            <th class="align-middle">
+                                <a href="{{ sort_urls.remaining }}" class="link-body-emphasis text-decoration-none">
+                                    Remaining{% if current_sort == 'remaining' %} <i class="bi bi-sort-{% if current_dir == 'desc' %}down{% else %}up{% endif %}"></i>{% endif %}
+                                </a>
+                            </th>
+                            <th class="align-middle">
+                                <a href="{{ sort_urls.location }}" class="link-body-emphasis text-decoration-none">
+                                    Location{% if current_sort == 'location' %} <i class="bi bi-sort-{% if current_dir == 'desc' %}down{% else %}up{% endif %}"></i>{% endif %}
+                                </a>
+                            </th>
+                            <th class="align-middle">
+                                <a href="{{ sort_urls.created_by }}" class="link-body-emphasis text-decoration-none">
+                                    Created By{% if current_sort == 'created_by' %} <i class="bi bi-sort-{% if current_dir == 'desc' %}down{% else %}up{% endif %}"></i>{% endif %}
+                                </a>
+                            </th>
+                            <th class="align-middle">
+                                <a href="{{ sort_urls.last_used }}" class="link-body-emphasis text-decoration-none">
+                                    Last Used{% if current_sort == 'last_used' %} <i class="bi bi-sort-{% if current_dir == 'desc' %}down{% else %}up{% endif %}"></i>{% endif %}
+                                </a>
+                            </th>
                             <th class="align-middle">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for filament in filaments %}
                         <tr>
-                            <td class="align-middle">
-                                {% if filament.tray_uuid %}
-                                    <span class="font-monospace small"
-                                          data-bs-toggle="tooltip"
-                                          data-bs-placement="top"
-                                          title="{{ filament.tray_uuid }}"
-                                          style="cursor: help;">
-                                        {{ filament.tray_uuid|slice:":8" }}...
-                                    </span>
-                                {% else %}
-                                    <span class="text-muted">-</span>
-                                {% endif %}
-                            </td>
                             <td class="align-middle">
                                 <div class="d-flex align-items-center">
                                     {% if filament.is_transparent %}
@@ -151,13 +173,14 @@
                                 <div class="progress" style="height: 20px;">
                                     <div class="progress-bar {% if filament.remaining_percent < 20 %}bg-danger{% elif filament.remaining_percent < 50 %}bg-warning{% else %}bg-success{% endif %}"
                                          style="width: {{ filament.remaining_percent }}%;">
-                                        {{ filament.remaining_percent }}%
+                                        {{ filament.remaining_percent|floatformat:"-2" }}%
                                     </div>
                                 </div>
                             </td>
                             <td class="align-middle">
                                 {% if filament.is_loaded_in_ams %}
                                     <span class="badge bg-success">
+                                        {% if filament.current_printer %}{{ filament.current_printer.name }} · {% endif %}
                                         {% if filament.ams_type %}{{ filament.ams_type }}{% else %}AMS{% endif %}
                                         {% if filament.ams_unit_id is not None %}#{{ filament.ams_unit_id }}{% endif %}
                                         · Tray {{ filament.current_tray_id }}
@@ -183,7 +206,7 @@
                         </tr>
                         {% empty %}
                         <tr>
-                            <td colspan="10" class="text-center text-muted">No filaments found. <a href="{% url 'bambu_run:filament_create' %}">Add your first spool!</a></td>
+                            <td colspan="9" class="text-center text-muted">No filaments found. <a href="{% url 'bambu_run:filament_create' %}">Add your first spool!</a></td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -195,15 +218,15 @@
             <nav>
                 <ul class="pagination justify-content-center">
                     {% if page_obj.has_previous %}
-                    <li class="page-item"><a class="page-link" href="?page=1">First</a></li>
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
+                    <li class="page-item"><a class="page-link" href="{{ page_urls.first }}">First</a></li>
+                    <li class="page-item"><a class="page-link" href="{{ page_urls.previous }}">Previous</a></li>
                     {% endif %}
 
                     <li class="page-item active"><span class="page-link">{{ page_obj.number }} of {{ page_obj.paginator.num_pages }}</span></li>
 
                     {% if page_obj.has_next %}
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
-                    <li class="page-item"><a class="page-link" href="?page={{ page_obj.paginator.num_pages }}">Last</a></li>
+                    <li class="page-item"><a class="page-link" href="{{ page_urls.next }}">Next</a></li>
+                    <li class="page-item"><a class="page-link" href="{{ page_urls.last }}">Last</a></li>
                     {% endif %}
                 </ul>
             </nav>
@@ -214,13 +237,4 @@
 {% endblock %}
 
 {% block extra_js %}
-<script>
-    // Enable Bootstrap tooltips for SN hover
-    document.addEventListener('DOMContentLoaded', function() {
-        var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
-        var tooltipList = tooltipTriggerList.map(function (tooltipTriggerEl) {
-            return new bootstrap.Tooltip(tooltipTriggerEl);
-        });
-    });
-</script>
 {% endblock %}

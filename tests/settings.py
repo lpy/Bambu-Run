@@ -35,6 +35,7 @@ DATABASES = {
 }
 
 USE_TZ = True
+TIME_ZONE = "UTC"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 ROOT_URLCONF = "tests.urls"

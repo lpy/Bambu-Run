@@ -185,6 +185,20 @@ docker compose exec bambu-run python standalone/manage.py createsuperuser
 
 Dashboard is at `http://<host-ip>:8000`.
 
+**Optional: offline third-party filament deduction**
+
+For third-party AMS spools, Bambu-Run can deduct usage from local `.gcode`,
+`.gco`, `.3mf`, or `.gcode.3mf` files when Bambu Cloud is unavailable. Mount the
+folder that contains print files into the container and set:
+
+```bash
+BAMBU_RUN_PRINT_FILE_DIRS=/prints
+```
+
+For multiple folders, separate paths with the OS path separator (`:` on Linux).
+On Synology Container Manager, this usually means mapping a NAS folder such as
+`/volume1/prints` to `/prints` inside the container.
+
 **Common operations:**
 
 ```bash
