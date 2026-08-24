@@ -132,6 +132,74 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
                 return value
         return None
 
+    def _filament_display_color(self, value, default='FFFFFFFF'):
+        value = (value or '').strip()
+        if value.startswith('#'):
+            value = value[1:]
+        if len(value) == 6:
+            return f"{value.upper()}FF"
+        if len(value) >= 8:
+            return value[:8].upper()
+        return default
+
+    def _external_spool_has_display_info(self, external_spool):
+        if not external_spool:
+            return False
+        useful_values = (
+            external_spool.get('type') or external_spool.get('tray_type'),
+            external_spool.get('sub_type') or external_spool.get('tray_sub_brands'),
+            external_spool.get('color') or external_spool.get('tray_color'),
+            external_spool.get('tray_uuid'),
+            external_spool.get('tag_uid'),
+            external_spool.get('tray_info_idx'),
+        )
+        blank_values = {'', '0', '00000000', '0000000000000000', '00000000000000000000000000000000'}
+        if any(str(value).strip() not in blank_values for value in useful_values if value is not None):
+            return True
+        remain_percent = self._valid_display_percent(
+            external_spool.get('remain_percent', external_spool.get('remain'))
+        )
+        return remain_percent is not None and remain_percent > 0
+
+    def _external_filament_from_inventory(self, filament):
+        remain_percent = self._valid_display_percent(filament.remaining_percent)
+        return {
+            'tray_id': 254,
+            'type': filament.type or 'Unknown',
+            'brand': filament.brand or 'Unknown',
+            'color': self._filament_display_color(filament.color_hex),
+            'color_name': filament.color,
+            'remain_percent': remain_percent,
+            'remain_percent_known': remain_percent is not None,
+            'ams_unit_id': None,
+            'ams_type': 'External Spool',
+            'is_external': True,
+            'filament_pk': filament.pk,
+            'is_transparent': filament.is_transparent,
+        }
+
+    def _external_filament_from_metric(self, external_spool):
+        remain_percent = self._valid_display_percent(
+            external_spool.get('remain_percent', external_spool.get('remain'))
+        )
+        return {
+            'tray_id': 254,
+            'type': external_spool.get('type') or external_spool.get('tray_type') or 'Unknown',
+            'brand': (
+                external_spool.get('sub_type')
+                or external_spool.get('tray_sub_brands')
+                or 'External Spool'
+            ),
+            'color': self._filament_display_color(
+                external_spool.get('color') or external_spool.get('tray_color')
+            ),
+            'remain_percent': remain_percent,
+            'remain_percent_known': remain_percent is not None,
+            'ams_unit_id': None,
+            'ams_type': 'External Spool',
+            'is_external': True,
+        }
+
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         context['bambu_run_base_template'] = app_settings.BASE_TEMPLATE
@@ -252,15 +320,21 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
                     display_remaining = self._valid_display_percent(snapshot.remain_percent)
                     display_ams_unit_id = snapshot.ams_unit_id
                     display_ams_type = snapshot.ams_type or ''
+                    is_external = snapshot.tray_id == 254 or snapshot.match_method == 'manual_loaded_external'
                     use_inventory_display = (
                         snapshot.filament
                         and snapshot.match_method != 'auto_created'
                     )
                     if snapshot.filament:
-                        if display_ams_unit_id is None:
+                        if snapshot.filament.is_loaded_externally:
+                            is_external = True
+                        if display_ams_unit_id is None and not is_external:
                             display_ams_unit_id = snapshot.filament.ams_unit_id
                         if not display_ams_type:
                             display_ams_type = snapshot.filament.ams_type or ''
+                    if is_external:
+                        display_ams_unit_id = None
+                        display_ams_type = 'External Spool'
                     if display_ams_unit_id is not None and not display_ams_type:
                         unit_meta = units_meta.get(display_ams_unit_id, {})
                         display_ams_type = unit_meta.get('ams_type') or ''
@@ -273,6 +347,7 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
                         'remain_percent_known': display_remaining is not None,
                         'ams_unit_id': display_ams_unit_id,
                         'ams_type': display_ams_type,
+                        'is_external': is_external,
                     }
                     if use_inventory_display:
                         filament_dict['type'] = snapshot.filament.type or display_type
@@ -293,6 +368,22 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
             except Exception:
                 filaments_list = []
 
+            if not any(f.get('is_external') for f in filaments_list):
+                external_filament = (
+                    Filament.objects
+                    .filter(current_printer=printer_device, is_loaded_externally=True)
+                    .order_by('-last_loaded_date', '-updated_at', '-pk')
+                    .first()
+                )
+                if external_filament:
+                    filaments_list.append(
+                        self._external_filament_from_inventory(external_filament)
+                    )
+                elif self._external_spool_has_display_info(latest_metric.external_spool or {}):
+                    filaments_list.append(
+                        self._external_filament_from_metric(latest_metric.external_spool or {})
+                    )
+
             # Build a lookup from unit_id → AMS unit metadata (humidity, temp, info code)
             # first so we can enrich blank ams_type values derived from old snapshots.
             # Distinct AMS units in this snapshot. ams_type stored on FilamentSnapshot
@@ -301,6 +392,8 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
             from .models import ams_type_from_info as _ams_type_from_info
             seen_units = {}
             for f in filaments_list:
+                if f.get('is_external'):
+                    continue
                 uid = f.get('ams_unit_id')
                 if uid is not None and uid not in seen_units:
                     label = f.get('ams_type') or ''
@@ -314,7 +407,17 @@ class PrinterDashboardView(LoginRequiredMixin, TemplateView):
             ]
 
             ams_groups = []
-            ungrouped = [f for f in filaments_list if f.get('ams_unit_id') is None]
+            external_filaments = [f for f in filaments_list if f.get('is_external')]
+            if external_filaments:
+                ams_groups.append({
+                    'unit_id': 'external',
+                    'ams_type': 'External Spool',
+                    'label': 'External Spool',
+                    'humidity': None,
+                    'temp': None,
+                    'filaments': external_filaments,
+                })
+            ungrouped = [f for f in filaments_list if f.get('ams_unit_id') is None and not f.get('is_external')]
             if ungrouped:
                 ams_groups.append({
                     'unit_id': None,
@@ -783,7 +886,7 @@ class FilamentListView(LoginRequiredMixin, ListView):
         'type': ['type'],
         'sub_type': ['sub_type'],
         'remaining': ['remaining_percent'],
-        'location': ['is_loaded_in_ams', 'current_printer__name', 'ams_unit_id', 'current_tray_id'],
+        'location': ['is_loaded_in_ams', 'is_loaded_externally', 'current_printer__name', 'ams_unit_id', 'current_tray_id'],
         'created_by': ['created_by'],
         'last_used': ['last_used'],
     }
@@ -797,9 +900,13 @@ class FilamentListView(LoginRequiredMixin, ListView):
 
         loaded = self.request.GET.get('loaded')
         if loaded == 'yes':
+            queryset = queryset.filter(Q(is_loaded_in_ams=True) | Q(is_loaded_externally=True))
+        elif loaded == 'ams':
             queryset = queryset.filter(is_loaded_in_ams=True)
+        elif loaded == 'external':
+            queryset = queryset.filter(is_loaded_externally=True)
         elif loaded == 'no':
-            queryset = queryset.filter(is_loaded_in_ams=False)
+            queryset = queryset.filter(is_loaded_in_ams=False, is_loaded_externally=False)
 
         ams_type = self.request.GET.get('ams_type')
         if ams_type:
@@ -861,14 +968,16 @@ class FilamentListView(LoginRequiredMixin, ListView):
                 'last': self._page_url(page_obj.paginator.num_pages),
             }
         context['total_spools'] = Filament.objects.count()
-        context['loaded_spools'] = Filament.objects.filter(is_loaded_in_ams=True).count()
+        context['loaded_spools'] = Filament.objects.filter(
+            Q(is_loaded_in_ams=True) | Q(is_loaded_externally=True)
+        ).count()
         context['low_filaments'] = Filament.objects.filter(remaining_percent__lt=20).count()
         context['filament_types'] = sorted(
             set(Filament.objects.exclude(type__isnull=True).exclude(type='').values_list('type', flat=True))
         )
         context['ams_type_choices'] = sorted(
             set(
-                Filament.objects.exclude(ams_type='').values_list('ams_type', flat=True)
+                Filament.objects.filter(is_loaded_in_ams=True).exclude(ams_type='').values_list('ams_type', flat=True)
             )
         )
         return context

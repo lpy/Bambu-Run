@@ -753,9 +753,25 @@ class PrinterState:
 
         if self.vt_tray:
             snapshot["external_spool"] = {
+                "tray_id": self.vt_tray.get("id", "254") or "254",
+                "slot": self.vt_tray.get("tray_id_name", ""),
                 "type": self.vt_tray.get("tray_type", ""),
+                "sub_type": self.vt_tray.get("tray_sub_brands", ""),
                 "color": self.vt_tray.get("tray_color", ""),
                 "remain": self.vt_tray.get("remain", 0),
+                "remain_percent": self.vt_tray.get("remain", 0),
+                "tray_weight": self.vt_tray.get("tray_weight", 0),
+                "tray_diameter": self.vt_tray.get("tray_diameter", 1.75),
+                "nozzle_temp_min": self.vt_tray.get("nozzle_temp_min", 0),
+                "nozzle_temp_max": self.vt_tray.get("nozzle_temp_max", 0),
+                "tag_uid": self.vt_tray.get("tag_uid", ""),
+                "tray_uuid": self.vt_tray.get("tray_uuid", ""),
+                "k": self.vt_tray.get("k", 0.0),
+                "n": self.vt_tray.get("n", 0.0),
+                "cali_idx": self.vt_tray.get("cali_idx", -1),
+                "tray_info_idx": self.vt_tray.get("tray_info_idx", ""),
+                "cols": self.vt_tray.get("cols", []),
+                "is_external": True,
             }
 
         return snapshot

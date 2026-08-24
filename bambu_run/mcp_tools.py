@@ -254,8 +254,8 @@ def list_filaments(type=None, brand=None, color=None, loaded_in_ams=None, low_fi
 
     lines = ["# Filament Inventory", ""]
     lines.append(f"*{qs.count()} spools total*\n")
-    lines.append("| ID | Brand | Type | Color | Remaining | In AMS | Last Used |")
-    lines.append("|----|-------|------|-------|-----------|--------|-----------|")
+    lines.append("| ID | Brand | Type | Color | Remaining | Location | Last Used |")
+    lines.append("|----|-------|------|-------|-----------|----------|-----------|")
     for f in filaments:
         color_display = f"{f.color}"
         if f.color_hex:
@@ -266,6 +266,9 @@ def list_filaments(type=None, brand=None, color=None, loaded_in_ams=None, low_fi
             printer_name = f.current_printer.name if f.current_printer else "Unknown printer"
             unit = f" unit {f.ams_unit_id}" if f.ams_unit_id is not None else ""
             location = f"{printer_name}{unit} tray {f.current_tray_id}"
+        elif f.is_loaded_externally:
+            printer_name = f.current_printer.name if f.current_printer else "Unknown printer"
+            location = f"{printer_name} external spool"
         lines.append(
             f"| {f.id} | {f.brand} | {f.sub_type or f.type} | "
             f"{color_display} | {f.remaining_percent}% | "
@@ -294,8 +297,11 @@ def get_filament_detail(filament_id):
         printer_name = f.current_printer.name if f.current_printer else "Unknown printer"
         unit = f" unit {f.ams_unit_id}" if f.ams_unit_id is not None else ""
         lines.append(f"**In AMS**: {printer_name}{unit} tray {f.current_tray_id}")
+    elif f.is_loaded_externally:
+        printer_name = f.current_printer.name if f.current_printer else "Unknown printer"
+        lines.append(f"**Location**: {printer_name} external spool")
     else:
-        lines.append("**In AMS**: No")
+        lines.append("**Location**: Storage")
     lines.append(f"**Created By**: {f.created_by}")
     if f.tray_uuid:
         lines.append(f"**Serial**: {_redact(f.tray_uuid)}")
@@ -612,14 +618,17 @@ def find_compatible_filament(type, min_remaining_percent=10, color=None):
     if color:
         lines.append(f"*Color filter: {color}*\n")
     lines.append(f"*{qs.count()} spools found*\n")
-    lines.append("| ID | Brand | Sub-type | Color | Remaining | In AMS |")
-    lines.append("|----|-------|----------|-------|-----------|--------|")
+    lines.append("| ID | Brand | Sub-type | Color | Remaining | Location |")
+    lines.append("|----|-------|----------|-------|-----------|----------|")
     for f in filaments:
         location = "No"
         if f.is_loaded_in_ams:
             printer_name = f.current_printer.name if f.current_printer else "Unknown printer"
             unit = f" unit {f.ams_unit_id}" if f.ams_unit_id is not None else ""
             location = f"{printer_name}{unit} tray {f.current_tray_id}"
+        elif f.is_loaded_externally:
+            printer_name = f.current_printer.name if f.current_printer else "Unknown printer"
+            location = f"{printer_name} external spool"
         lines.append(
             f"| {f.id} | {f.brand} | {f.sub_type or f.type} | "
             f"{f.color} | {f.remaining_percent}% | "

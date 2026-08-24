@@ -37,8 +37,13 @@ document.addEventListener('DOMContentLoaded', function () {
     const amsDataEl = document.getElementById('ams-slot-data');
     const amsUnits = amsDataEl ? JSON.parse(amsDataEl.textContent) : [];
     const printerSelect = document.getElementById('id_current_printer');
-    const amsUnitSelect = document.getElementById('id_ams_unit_id');
-    const traySelect = document.getElementById('id_current_tray_id');
+    const locationTargetSelect = document.getElementById('id_location_target');
+    const locationTraySelect = document.getElementById('id_location_tray_id');
+    const loadedInAmsField = document.getElementById('id_is_loaded_in_ams');
+    const externalSpoolField = document.getElementById('id_is_loaded_externally');
+    const hiddenAmsUnitField = document.getElementById('id_ams_unit_id');
+    const hiddenTrayField = document.getElementById('id_current_tray_id');
+    const hiddenAmsTypeField = document.getElementById('id_ams_type');
 
     function option(value, label) {
         const opt = document.createElement('option');
@@ -47,56 +52,142 @@ document.addEventListener('DOMContentLoaded', function () {
         return opt;
     }
 
-    function syncAmsUnitChoices() {
-        if (!printerSelect || !amsUnitSelect || !amsUnits.length) return;
-
-        const currentUnit = amsUnitSelect.value;
+    function matchingUnitsForPrinter() {
+        if (!printerSelect) return [];
         const selectedPrinterId = printerSelect.value;
-        const matchingUnits = amsUnits.filter(function (unit) {
-            return !selectedPrinterId || String(unit.printer_id) === String(selectedPrinterId);
+        return amsUnits.filter(function (unit) {
+            return selectedPrinterId && String(unit.printer_id) === String(selectedPrinterId);
         });
+    }
 
-        amsUnitSelect.replaceChildren(option('', '--- Select AMS Unit ---'));
+    function syncLocationTargetChoices() {
+        if (!printerSelect || !locationTargetSelect) return;
+
+        const currentTarget = locationTargetSelect.value;
+        const selectedPrinterId = printerSelect.value;
+        const matchingUnits = matchingUnitsForPrinter();
+
+        locationTargetSelect.replaceChildren(option('', '--- Select AMS Unit ---'));
+        locationTargetSelect.disabled = !selectedPrinterId;
+        if (!selectedPrinterId) {
+            locationTargetSelect.value = '';
+            return;
+        }
+
+        locationTargetSelect.appendChild(option('external', 'External Spool'));
         matchingUnits.forEach(function (unit) {
-            amsUnitSelect.appendChild(option(unit.unit_id, unit.label));
+            const label = (unit.ams_type || 'AMS') + ' (Unit ' + unit.unit_id + ')';
+            locationTargetSelect.appendChild(option(unit.unit_id, label));
         });
 
-        if (matchingUnits.some(function (unit) { return String(unit.unit_id) === String(currentUnit); })) {
-            amsUnitSelect.value = currentUnit;
+        if (
+            currentTarget === 'external'
+            || matchingUnits.some(function (unit) { return String(unit.unit_id) === String(currentTarget); })
+        ) {
+            locationTargetSelect.value = currentTarget;
         }
     }
 
     function syncTrayChoices() {
-        if (!amsUnitSelect || !traySelect || !amsUnits.length) return;
+        if (!printerSelect || !locationTargetSelect || !locationTraySelect) return;
 
-        const selectedPrinterId = printerSelect ? printerSelect.value : '';
-        const currentTray = traySelect.value;
-        const selectedUnit = amsUnits.find(function (unit) {
-            const printerMatches = !selectedPrinterId || String(unit.printer_id) === String(selectedPrinterId);
-            return printerMatches && String(unit.unit_id) === String(amsUnitSelect.value);
+        const currentTray = locationTraySelect.value;
+        const selectedPrinterId = printerSelect.value;
+        const selectedTarget = locationTargetSelect.value;
+        const selectedUnit = matchingUnitsForPrinter().find(function (unit) {
+            return String(unit.unit_id) === String(selectedTarget);
         });
-        const trayIds = selectedUnit ? selectedUnit.tray_ids : [0, 1, 2, 3];
 
-        traySelect.replaceChildren(option('', '--- Select Tray ---'));
+        locationTraySelect.replaceChildren(option('', '--- Select Tray ---'));
+        if (!selectedPrinterId || selectedTarget === 'external' || !selectedUnit) {
+            locationTraySelect.value = '';
+            locationTraySelect.disabled = true;
+            return;
+        }
+
+        const trayIds = selectedUnit.tray_ids || [0, 1, 2, 3];
         trayIds.forEach(function (trayId) {
-            traySelect.appendChild(option(trayId, 'Tray ' + trayId));
+            locationTraySelect.appendChild(option(trayId, 'Tray ' + trayId));
         });
 
         if (trayIds.map(String).includes(String(currentTray))) {
-            traySelect.value = currentTray;
+            locationTraySelect.value = currentTray;
+        } else if (trayIds.length === 1) {
+            locationTraySelect.value = String(trayIds[0]);
+        }
+
+        locationTraySelect.disabled = trayIds.length === 1;
+    }
+
+    function selectedAmsUnit() {
+        const selectedTarget = locationTargetSelect ? locationTargetSelect.value : '';
+        return matchingUnitsForPrinter().find(function (unit) {
+            return String(unit.unit_id) === String(selectedTarget);
+        });
+    }
+
+    function syncHiddenLocationFields() {
+        const selectedPrinterId = printerSelect ? printerSelect.value : '';
+        const selectedTarget = locationTargetSelect ? locationTargetSelect.value : '';
+        const selectedUnit = selectedAmsUnit();
+
+        if (!selectedPrinterId) {
+            if (loadedInAmsField) loadedInAmsField.value = '';
+            if (externalSpoolField) externalSpoolField.value = '';
+            if (hiddenAmsUnitField) hiddenAmsUnitField.value = '';
+            if (hiddenTrayField) hiddenTrayField.value = '';
+            if (hiddenAmsTypeField) hiddenAmsTypeField.value = '';
+            return;
+        }
+
+        if (selectedTarget === 'external') {
+            if (loadedInAmsField) loadedInAmsField.value = '';
+            if (externalSpoolField) externalSpoolField.value = 'on';
+            if (hiddenAmsUnitField) hiddenAmsUnitField.value = '';
+            if (hiddenTrayField) hiddenTrayField.value = '254';
+            if (hiddenAmsTypeField) hiddenAmsTypeField.value = '';
+            return;
+        }
+
+        if (selectedUnit) {
+            if (loadedInAmsField) loadedInAmsField.value = 'on';
+            if (externalSpoolField) externalSpoolField.value = '';
+            if (hiddenAmsUnitField) hiddenAmsUnitField.value = selectedTarget;
+            if (hiddenTrayField) hiddenTrayField.value = locationTraySelect ? locationTraySelect.value : '';
+            if (hiddenAmsTypeField) hiddenAmsTypeField.value = selectedUnit.ams_type || '';
         }
     }
 
-    if (amsUnitSelect && traySelect) {
-        syncAmsUnitChoices();
+    function syncLocationControls() {
+        syncLocationTargetChoices();
         syncTrayChoices();
+        syncHiddenLocationFields();
+    }
+
+    if (locationTargetSelect || locationTraySelect) {
+        syncLocationControls();
         if (printerSelect) {
             printerSelect.addEventListener('change', function () {
-                syncAmsUnitChoices();
-                syncTrayChoices();
+                syncLocationControls();
             });
         }
-        amsUnitSelect.addEventListener('change', syncTrayChoices);
+        if (locationTargetSelect) {
+            locationTargetSelect.addEventListener('change', function () {
+                syncTrayChoices();
+                syncHiddenLocationFields();
+            });
+        }
+        if (locationTraySelect) {
+            locationTraySelect.addEventListener('change', syncHiddenLocationFields);
+        }
+        const filamentForm = printerSelect ? printerSelect.closest('form') : null;
+        if (filamentForm) {
+            filamentForm.addEventListener('submit', function () {
+                if (locationTargetSelect) locationTargetSelect.disabled = false;
+                if (locationTraySelect) locationTraySelect.disabled = false;
+                syncHiddenLocationFields();
+            });
+        }
     }
 
     // ── Transparent toggle ────────────────────────────────────────────────────

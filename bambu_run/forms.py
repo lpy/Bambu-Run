@@ -58,6 +58,14 @@ class FilamentForm(forms.ModelForm):
         required=False,
         widget=forms.HiddenInput(attrs={'id': 'id_remaining_source'})
     )
+    location_target = forms.CharField(
+        required=False,
+        widget=forms.Select(attrs={'class': 'form-select', 'id': 'id_location_target'})
+    )
+    location_tray_id = forms.CharField(
+        required=False,
+        widget=forms.Select(attrs={'class': 'form-select', 'id': 'id_location_tray_id'})
+    )
 
     color_hex_text = forms.CharField(
         required=False,
@@ -78,7 +86,7 @@ class FilamentForm(forms.ModelForm):
             'filament_type', 'type', 'sub_type', 'brand', 'color', 'color_hex', 'is_transparent',
             'diameter', 'initial_weight_grams',
             'remaining_percent', 'remaining_weight_grams',
-            'is_loaded_in_ams', 'current_printer', 'current_tray_id', 'ams_unit_id', 'ams_type',
+            'is_loaded_in_ams', 'is_loaded_externally', 'current_printer', 'current_tray_id', 'ams_unit_id', 'ams_type',
             'purchase_date', 'purchase_price', 'supplier', 'notes'
         ]
         widgets = {
@@ -109,17 +117,12 @@ class FilamentForm(forms.ModelForm):
             'remaining_percent': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'max': '100', 'step': '0.01'}),
             'remaining_weight_grams': forms.NumberInput(attrs={'class': 'form-control', 'min': '0', 'step': '0.01'}),
             'is_transparent': forms.CheckboxInput(attrs={'class': 'form-check-input', 'id': 'id_is_transparent'}),
-            'is_loaded_in_ams': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'is_loaded_in_ams': forms.HiddenInput(),
+            'is_loaded_externally': forms.HiddenInput(),
             'current_printer': forms.Select(attrs={'class': 'form-select', 'id': 'id_current_printer'}),
-            'current_tray_id': forms.NumberInput(attrs={
-                'class': 'form-control', 'min': '0', 'max': '15',
-                'placeholder': '0–3 for AMS / AMS 2 Pro, 0 for AMS HT',
-            }),
-            'ams_unit_id': forms.NumberInput(attrs={
-                'class': 'form-control', 'min': '0', 'max': '255',
-                'placeholder': 'AMS unit id (0,1,… or 128 for AMS HT)',
-            }),
-            'ams_type': forms.Select(attrs={'class': 'form-select'}),
+            'current_tray_id': forms.HiddenInput(),
+            'ams_unit_id': forms.HiddenInput(),
+            'ams_type': forms.HiddenInput(),
             'purchase_date': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
             'purchase_price': forms.NumberInput(attrs={'class': 'form-control', 'step': '0.01'}),
             'supplier': forms.TextInput(attrs={'class': 'form-control'}),
@@ -128,6 +131,7 @@ class FilamentForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         ams_units = kwargs.pop('ams_units', None) or []
+        self.ams_units = ams_units
         super().__init__(*args, **kwargs)
         if self.instance and self.instance.color_hex:
             self.fields['color_hex_text'].initial = self.instance.color_hex
@@ -148,12 +152,28 @@ class FilamentForm(forms.ModelForm):
         self.fields['brand'].required = False
         self.fields['ams_unit_id'].required = False
         self.fields['ams_type'].required = False
+        self.fields['location_target'].choices = self._location_target_choices(ams_units)
+        self.fields['location_tray_id'].choices = self._location_tray_choices(ams_units)
+        self.fields['location_target'].initial = self._initial_location_target()
+        self.fields['location_tray_id'].initial = (
+            str(self.instance.current_tray_id)
+            if self.instance and self.instance.current_tray_id is not None and not self.instance.is_loaded_externally
+            else ''
+        )
 
-        self._populate_ams_choices(ams_units)
         self._populate_color_choices()
 
-    def _populate_ams_choices(self, ams_units):
-        unit_choices = [('', '--- Select AMS Unit ---')]
+    def _initial_location_target(self):
+        if not self.instance or not self.instance.pk:
+            return ''
+        if self.instance.is_loaded_externally:
+            return 'external'
+        if self.instance.is_loaded_in_ams and self.instance.ams_unit_id is not None:
+            return str(self.instance.ams_unit_id)
+        return ''
+
+    def _location_target_choices(self, ams_units):
+        choices = [('', '--- Select AMS Unit ---'), ('external', 'External Spool')]
         seen_units = set()
 
         for unit in ams_units:
@@ -163,8 +183,8 @@ class FilamentForm(forms.ModelForm):
             if unit_id is None or slot_key in seen_units:
                 continue
             seen_units.add(slot_key)
-            label = unit.get('label') or f"{unit.get('ams_type') or 'AMS'} (Unit {unit_id})"
-            unit_choices.append((unit_id, label))
+            label = f"{unit.get('ams_type') or 'AMS'} (Unit {unit_id})"
+            choices.append((str(unit_id), label))
 
         instance_key = (
             self.instance.current_printer_id if self.instance else None,
@@ -176,11 +196,13 @@ class FilamentForm(forms.ModelForm):
             and instance_key not in seen_units
         ):
             label = self.instance.ams_type or 'AMS'
-            unit_choices.append((self.instance.ams_unit_id, f"{label} (Unit {self.instance.ams_unit_id})"))
+            choices.append((str(self.instance.ams_unit_id), f"{label} (Unit {self.instance.ams_unit_id})"))
 
-        if len(unit_choices) == 1:
-            unit_choices.append((0, 'AMS (Unit 0)'))
+        if len(choices) == 2:
+            choices.append(('0', 'AMS (Unit 0)'))
+        return choices
 
+    def _location_tray_choices(self, ams_units):
         tray_ids = set()
         for unit in ams_units:
             tray_ids.update(unit.get('tray_ids') or [])
@@ -190,16 +212,8 @@ class FilamentForm(forms.ModelForm):
             tray_ids.update(range(4))
 
         tray_choices = [('', '--- Select Tray ---')]
-        tray_choices.extend((tray_id, f"Tray {tray_id}") for tray_id in sorted(tray_ids))
-
-        self.fields['ams_unit_id'].widget = forms.Select(
-            attrs={'class': 'form-select', 'id': 'id_ams_unit_id'},
-            choices=unit_choices,
-        )
-        self.fields['current_tray_id'].widget = forms.Select(
-            attrs={'class': 'form-select', 'id': 'id_current_tray_id'},
-            choices=tray_choices,
-        )
+        tray_choices.extend((str(tray_id), f"Tray {tray_id}") for tray_id in sorted(tray_ids))
+        return tray_choices
 
     def _populate_color_choices(self):
         """Populate color field choices from the global FilamentColor database."""
@@ -257,9 +271,10 @@ class FilamentForm(forms.ModelForm):
     def clean(self):
         cleaned_data = super().clean()
         is_loaded = cleaned_data.get('is_loaded_in_ams')
+        is_external = cleaned_data.get('is_loaded_externally')
         current_printer = cleaned_data.get('current_printer')
-        tray_id = cleaned_data.get('current_tray_id')
-        ams_unit_id = cleaned_data.get('ams_unit_id')
+        location_target = cleaned_data.get('location_target') or ''
+        location_tray_id = cleaned_data.get('location_tray_id') or ''
 
         color_hex_text = cleaned_data.get('color_hex_text')
         if color_hex_text:
@@ -277,14 +292,56 @@ class FilamentForm(forms.ModelForm):
             cleaned_data['sub_type'] = ft.sub_type or ''
             cleaned_data['brand'] = ft.brand
 
-        if is_loaded and tray_id is None:
-            raise forms.ValidationError('Tray ID required when filament is loaded in AMS')
-        if is_loaded and current_printer is None:
-            raise forms.ValidationError('Printer required when filament is loaded in AMS')
-        if is_loaded and ams_unit_id is None:
-            raise forms.ValidationError('AMS Unit ID required when filament is loaded in AMS')
+        if current_printer is None:
+            cleaned_data['is_loaded_in_ams'] = False
+            cleaned_data['is_loaded_externally'] = False
+            cleaned_data['current_tray_id'] = None
+            cleaned_data['ams_unit_id'] = None
+            cleaned_data['ams_type'] = ''
+            return cleaned_data
+
+        if location_target == 'external':
+            cleaned_data['is_loaded_in_ams'] = False
+            cleaned_data['is_loaded_externally'] = True
+            cleaned_data['current_tray_id'] = 254
+            cleaned_data['ams_unit_id'] = None
+            cleaned_data['ams_type'] = ''
+            return cleaned_data
+
+        if not location_target:
+            raise forms.ValidationError('AMS Unit or External Spool required when printer is selected')
+
+        ams_unit_id = self._parse_location_int(location_target)
+        tray_id = self._parse_location_int(location_tray_id)
+        if ams_unit_id is None:
+            raise forms.ValidationError('AMS Unit required when printer is selected')
+        if tray_id is None:
+            raise forms.ValidationError('AMS Tray ID required when AMS Unit is selected')
+
+        cleaned_data['is_loaded_in_ams'] = True
+        cleaned_data['is_loaded_externally'] = False
+        cleaned_data['ams_unit_id'] = ams_unit_id
+        cleaned_data['current_tray_id'] = tray_id
+        cleaned_data['ams_type'] = self._ams_type_for_location(current_printer.pk, ams_unit_id)
 
         return cleaned_data
+
+    def _parse_location_int(self, value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _ams_type_for_location(self, printer_id, ams_unit_id):
+        for unit in self.ams_units:
+            if (
+                str(unit.get('printer_id')) == str(printer_id)
+                and str(unit.get('unit_id')) == str(ams_unit_id)
+            ):
+                return unit.get('ams_type') or ''
+        if self.instance and self.instance.ams_unit_id == ams_unit_id:
+            return self.instance.ams_type or ''
+        return ''
 
     def _sync_remaining_fields(self, cleaned_data):
         initial_weight = cleaned_data.get('initial_weight_grams')
@@ -335,9 +392,19 @@ class FilamentForm(forms.ModelForm):
         filament = super().save(commit=False)
 
         if filament.is_loaded_in_ams:
+            filament.is_loaded_externally = False
             if not filament.last_loaded_date or any(
                 field in self.changed_data
                 for field in ('is_loaded_in_ams', 'current_printer', 'current_tray_id', 'ams_unit_id', 'ams_type')
+            ):
+                filament.last_loaded_date = timezone.now()
+        elif filament.is_loaded_externally:
+            filament.current_tray_id = 254
+            filament.ams_unit_id = None
+            filament.ams_type = ''
+            if not filament.last_loaded_date or any(
+                field in self.changed_data
+                for field in ('is_loaded_externally', 'current_printer')
             ):
                 filament.last_loaded_date = timezone.now()
         else:
@@ -359,6 +426,17 @@ class FilamentForm(forms.ModelForm):
                     occupants = occupants.filter(ams_unit_id=filament.ams_unit_id)
                 occupants.update(
                     is_loaded_in_ams=False,
+                    current_printer=None,
+                    current_tray_id=None,
+                    ams_unit_id=None,
+                    ams_type='',
+                )
+            elif filament.is_loaded_externally:
+                Filament.objects.filter(
+                    is_loaded_externally=True,
+                    current_printer=filament.current_printer,
+                ).exclude(pk=filament.pk).update(
+                    is_loaded_externally=False,
                     current_printer=None,
                     current_tray_id=None,
                     ams_unit_id=None,

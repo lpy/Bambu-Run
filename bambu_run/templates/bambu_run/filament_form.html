@@ -14,6 +14,11 @@
             <form method="post">
                 {% csrf_token %}
                 {{ form.remaining_source }}
+                {{ form.is_loaded_in_ams }}
+                {{ form.is_loaded_externally }}
+                {{ form.ams_unit_id }}
+                {{ form.ams_type }}
+                {{ form.current_tray_id }}
 
                 <h5>Identification</h5>
                 <div class="row mb-3">
@@ -114,28 +119,19 @@
                 </div>
 
                 <div class="row mb-3">
-                    <div class="col-md-2">
-                        <div class="form-check">
-                            {{ form.is_loaded_in_ams }}
-                            <label class="form-check-label">Loaded in AMS</label>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
+                    <div class="col-md-4">
                         <label class="form-label">Printer</label>
                         {{ form.current_printer }}
+                        <small class="form-text text-muted">Leave empty to keep this spool in inventory</small>
                     </div>
-                    <div class="col-md-3">
-                        <label class="form-label">AMS Unit ID</label>
-                        {{ form.ams_unit_id }}
-                        <small class="form-text text-muted">Usually 0; AMS HT is often 128</small>
+                    <div class="col-md-4">
+                        <label class="form-label">AMS Unit</label>
+                        {{ form.location_target }}
+                        <small class="form-text text-muted">Select External Spool or an AMS unit</small>
                     </div>
-                    <div class="col-md-2">
-                        <label class="form-label">AMS Type</label>
-                        {{ form.ams_type }}
-                    </div>
-                    <div class="col-md-2">
+                    <div class="col-md-4">
                         <label class="form-label">AMS Tray ID</label>
-                        {{ form.current_tray_id }}
+                        {{ form.location_tray_id }}
                         <small class="form-text text-muted">0-3 for AMS / AMS 2 Pro</small>
                     </div>
                 </div>

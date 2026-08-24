@@ -2,9 +2,11 @@
 
 Self-hosted monitoring and filament inventory for Bambu Lab printers, with a focus on third-party filament usage in AMS setups.
 
-This repository has diverged from the original Bambu-Run project. You are welcome to refer to the original [Bambu-Run repository](https://github.com/RunLit/Bambu-Run). The upstream README has been preserved as [OLD_README.md](OLD_README.md). This fork keeps the printer dashboard, collection service, and self-hosted deployment model, but extends filament management so non-Bambu spools can be loaded into AMS trays and deducted from local inventory.
+This repository has diverged from the original Bambu-Run project. You are welcome to refer to the original [Bambu-Run repository](https://github.com/RunLit/Bambu-Run). The upstream README has been preserved as [OLD_README.md](OLD_README.md). This fork keeps the printer dashboard, collection service, and self-hosted deployment model, but extends filament management so non-Bambu spools can be loaded into AMS trays or the printer's external spool holder and deducted from local inventory.
 
 ![Filament inventory](docs/Filament_Inventory.png)
+
+![Printer filament dashboard](docs/Filament_dashboard.png)
 
 ## What This Fork Adds
 
@@ -12,6 +14,7 @@ This repository has diverged from the original Bambu-Run project. You are welcom
 - **Global spool inventory**: inventory belongs to you, not to a specific printer.
 - **Printer-scoped loading locations**: AMS units, AMS trays, and external spool slots are tied to a printer.
 - **Multiple AMS support**: select the AMS unit and tray when loading a spool, including AMS 2 Pro and AMS HT style unit IDs.
+- **External spool support**: mark a spool as loaded on a printer's external spool holder, show it on the printer dashboard, and deduct usage from the linked local spool.
 - **Dashboard fallback behavior**: when a tray is not linked to a local inventory spool, the dashboard still shows the filament information reported by Bambu Cloud/MQTT.
 - **Filament usage deduction**: deduct usage from locally managed third-party spools using printer job data and local print-file metadata where available.
 - **Filament change handling**: supports known-leftover and unknown-leftover spool replacement cases during a print.
@@ -112,13 +115,14 @@ docker compose restart bambu-run
 1. Go to **Filament Inventory**.
 2. Add a spool, for example `SUNLU PLA White`.
 3. Set initial weight and remaining weight/percent. Unknown existing spools can be entered with your best estimate.
-4. Enable **Loaded in AMS**.
-5. Select the printer, AMS unit, and tray.
-6. Save.
+4. To keep it in storage, leave the printer blank.
+5. To load it into AMS, select the printer, AMS unit, and tray.
+6. To load it on the external spool holder, select the printer and choose **External Spool**.
+7. Save.
 
-The dashboard should now show that local inventory spool in the matching tray. When usage data is available, Bambu-Run deducts material from the linked spool.
+The dashboard should now show that local inventory spool in the matching AMS tray or external spool slot. When usage data is available, Bambu-Run deducts material from the linked spool.
 
-If no inventory spool is linked to a tray, the dashboard falls back to whatever Bambu reports for that tray instead of hiding it.
+If no inventory spool is linked to a tray or external spool slot, the dashboard falls back to whatever Bambu reports for that location instead of hiding it.
 
 ## Filament Colors And Finishes
 
@@ -181,4 +185,4 @@ python -m pytest -q
 python standalone/manage.py makemigrations --check --dry-run
 ```
 
-The app has test coverage for multi-AMS tray mapping, third-party filament usage deduction, decimal remaining values, dashboard fallback behavior, and global color finishes.
+The app has test coverage for multi-AMS tray mapping, external spool display, third-party filament usage deduction, decimal remaining values, dashboard fallback behavior, and global color finishes.

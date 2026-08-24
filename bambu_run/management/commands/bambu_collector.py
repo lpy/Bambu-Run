@@ -379,6 +379,35 @@ class Command(BaseCommand):
             return None
         return value
 
+    def _is_external_tray_data(self, tray_data):
+        return bool(tray_data.get('is_external')) or self._to_int(tray_data.get('tray_id')) == 254
+
+    def _external_spool_has_info(self, external_spool):
+        if not external_spool:
+            return False
+        identifiers = (
+            external_spool.get('type'),
+            external_spool.get('sub_type'),
+            external_spool.get('color'),
+            external_spool.get('tag_uid'),
+            external_spool.get('tray_uuid'),
+            external_spool.get('tray_info_idx'),
+        )
+        if any(value not in (None, '', '00000000', '0000000000000000', '00000000000000000000000000000000') for value in identifiers):
+            return True
+        remain_percent = self._valid_percent(external_spool.get('remain_percent', external_spool.get('remain')))
+        return remain_percent is not None and remain_percent > 0
+
+    def _external_spool_tray_data(self, external_spool):
+        return {
+            **external_spool,
+            'tray_id': self._to_int(external_spool.get('tray_id')) or 254,
+            'remain_percent': external_spool.get('remain_percent', external_spool.get('remain')),
+            'is_external': True,
+            'ams_unit_id': None,
+            'ams_type': 'External Spool',
+        }
+
     def _inventory_color_for_mqtt(self, filament):
         if filament.color_hex:
             return f"{filament.color_hex.lstrip('#').upper()}FF"
@@ -392,6 +421,14 @@ class Command(BaseCommand):
         "assign spool to AMS slot" workflow.
         """
         from bambu_run.models import Filament
+
+        if self._is_external_tray_data(tray_data):
+            qs = Filament.objects.filter(is_loaded_externally=True)
+            if printer is not None:
+                qs = qs.filter(current_printer=printer)
+            if qs.count() == 1:
+                return qs.order_by('-last_loaded_date', '-updated_at').first()
+            return None
 
         tray_id = self._to_int(tray_data.get('tray_id'))
         if tray_id is None:
@@ -467,6 +504,7 @@ class Command(BaseCommand):
 
             filament = (
                 Filament.objects.filter(**query_filters, is_loaded_in_ams=False)
+                .filter(is_loaded_externally=False)
                 .order_by('remaining_percent', 'last_used')
                 .first()
             )
@@ -557,10 +595,11 @@ class Command(BaseCommand):
             remaining_percent=remain_percent,
             created_by='Auto Detection',
             current_printer=printer,
-            is_loaded_in_ams=True,
-            current_tray_id=tray_data.get('tray_id'),
-            ams_unit_id=tray_data.get('ams_unit_id'),
-            ams_type=tray_data.get('ams_type', '') or '',
+            is_loaded_in_ams=not self._is_external_tray_data(tray_data),
+            is_loaded_externally=self._is_external_tray_data(tray_data),
+            current_tray_id=254 if self._is_external_tray_data(tray_data) else tray_data.get('tray_id'),
+            ams_unit_id=None if self._is_external_tray_data(tray_data) else tray_data.get('ams_unit_id'),
+            ams_type='' if self._is_external_tray_data(tray_data) else tray_data.get('ams_type', '') or '',
             last_loaded_date=timezone.now(),
         )
 
@@ -578,6 +617,7 @@ class Command(BaseCommand):
         from bambu_run.models import Filament
 
         tray_data = tray_data or {}
+        is_external = self._is_external_tray_data(tray_data)
         ams_unit_id = tray_data.get('ams_unit_id')
         ams_type_label = tray_data.get('ams_type', '') or ''
 
@@ -590,46 +630,59 @@ class Command(BaseCommand):
                 logger.debug(f"Updated filament {filament}: {remain_percent}%")
 
         location_changed = (
-            not filament.is_loaded_in_ams
+            (not filament.is_loaded_externally if is_external else not filament.is_loaded_in_ams)
             or (printer is not None and filament.current_printer_id != printer.id)
             or filament.current_tray_id != tray_id
-            or (ams_unit_id is not None and filament.ams_unit_id != ams_unit_id)
+            or (not is_external and ams_unit_id is not None and filament.ams_unit_id != ams_unit_id)
         )
         if location_changed:
             # Unload anything previously occupying THIS exact (unit, tray) slot.
-            unload_qs = Filament.objects.filter(
-                is_loaded_in_ams=True, current_tray_id=tray_id
-            ).exclude(id=filament.id)
-            if printer is not None:
-                unload_qs = unload_qs.filter(current_printer=printer)
-            if ams_unit_id is not None:
-                unload_qs = unload_qs.filter(ams_unit_id=ams_unit_id)
+            if is_external:
+                unload_qs = Filament.objects.filter(
+                    is_loaded_externally=True
+                ).exclude(id=filament.id)
+                if printer is not None:
+                    unload_qs = unload_qs.filter(current_printer=printer)
+            else:
+                unload_qs = Filament.objects.filter(
+                    is_loaded_in_ams=True, current_tray_id=tray_id
+                ).exclude(id=filament.id)
+                if printer is not None:
+                    unload_qs = unload_qs.filter(current_printer=printer)
+                if ams_unit_id is not None:
+                    unload_qs = unload_qs.filter(ams_unit_id=ams_unit_id)
             previous_filament = unload_qs.first()
 
             if previous_filament:
                 previous_filament.is_loaded_in_ams = False
+                previous_filament.is_loaded_externally = False
                 previous_filament.current_printer = None
                 previous_filament.current_tray_id = None
                 previous_filament.ams_unit_id = None
                 previous_filament.ams_type = ''
                 previous_filament.save()
                 logger.info(
-                    f"Auto-unloaded {previous_filament} from Tray {tray_id} "
+                    f"Auto-unloaded {previous_filament} from "
+                    f"{'external spool' if is_external else f'Tray {tray_id}'} "
                     f"(unit {ams_unit_id}; replaced by {filament.brand} {filament.type} - {filament.color})"
                 )
 
-            filament.is_loaded_in_ams = True
+            filament.is_loaded_in_ams = not is_external
+            filament.is_loaded_externally = is_external
             if printer is not None:
                 filament.current_printer = printer
-            filament.current_tray_id = tray_id
-            if ams_unit_id is not None:
+            filament.current_tray_id = 254 if is_external else tray_id
+            if is_external:
+                filament.ams_unit_id = None
+                filament.ams_type = ''
+            elif ams_unit_id is not None:
                 filament.ams_unit_id = ams_unit_id
-            if ams_type_label:
+            if ams_type_label and not is_external:
                 filament.ams_type = ams_type_label
             filament.last_loaded_date = timezone.now()
             if self.verbose:
                 logger.debug(f"Updated filament location: unit={ams_unit_id} tray={tray_id}")
-        elif ams_type_label and filament.ams_type != ams_type_label:
+        elif ams_type_label and not is_external and filament.ams_type != ams_type_label:
             # Same slot but ams_type was previously unknown — fill it in.
             filament.ams_type = ams_type_label
 
@@ -638,7 +691,7 @@ class Command(BaseCommand):
     def _snapshot_values_for_filament(self, filament, tray_data, match_method):
         """Return display values for a snapshot, preferring manual inventory data."""
         remain_percent = self._valid_percent(tray_data.get('remain_percent'))
-        if filament and match_method == 'manual_loaded_slot':
+        if filament and match_method in {'manual_loaded_slot', 'manual_loaded_external'}:
             return {
                 'type': filament.type,
                 'sub_type': filament.sub_type,
@@ -658,6 +711,10 @@ class Command(BaseCommand):
     def _create_filament_snapshots(self, printer_metric, filaments_data, snapshot):
         from bambu_run.models import Filament, FilamentSnapshot
 
+        external_spool = snapshot.get('external_spool') or {}
+        if self._external_spool_has_info(external_spool):
+            filaments_data = list(filaments_data) + [self._external_spool_tray_data(external_spool)]
+
         ams_units = {
             u.get('unit_id'): u for u in snapshot.get('ams_units', [])
         }
@@ -672,8 +729,11 @@ class Command(BaseCommand):
                 tray_data,
                 printer=printer_metric.device,
             )
+            if self._is_external_tray_data(tray_data) and match_method == 'manual_loaded_slot':
+                match_method = 'manual_loaded_external'
             unit_id_int = self._to_int(tray_data.get('ams_unit_id'))
-            if unit_id_int is None and filament and filament.ams_unit_id is not None:
+            is_external = self._is_external_tray_data(tray_data)
+            if unit_id_int is None and filament and filament.ams_unit_id is not None and not is_external:
                 unit_id_int = self._to_int(filament.ams_unit_id)
 
             # Keep downstream status/snapshot code consistent when the printer
@@ -687,9 +747,12 @@ class Command(BaseCommand):
             ams_type_label = (
                 tray_data.get('ams_type')
                 or (unit_data or {}).get('ams_type')
-                or (filament.ams_type if filament else '')
+                or (filament.ams_type if filament and not is_external else '')
                 or ''
             )
+            if is_external:
+                unit_id_int = None
+                ams_type_label = 'External Spool'
             tray_data['ams_type'] = ams_type_label
             represented_slots.add((unit_id_int, self._to_int(tray_id)))
 
@@ -700,7 +763,7 @@ class Command(BaseCommand):
                     tray_id,
                     remain_percent,
                     tray_data,
-                    sync_remaining=match_method != 'manual_loaded_slot',
+                    sync_remaining=match_method not in {'manual_loaded_slot', 'manual_loaded_external'},
                     printer=printer_metric.device,
                 )
 
@@ -724,7 +787,7 @@ class Command(BaseCommand):
                 tag_uid=self._clean_mqtt_identifier(tray_data.get('tag_uid')),
                 tray_uuid=self._clean_mqtt_identifier(tray_data.get('tray_uuid')),
                 state=tray_data.get('state'),
-                auto_matched=bool(filament) and match_method != 'manual_loaded_slot',
+                auto_matched=bool(filament) and match_method not in {'manual_loaded_slot', 'manual_loaded_external'},
                 match_method=match_method
             )
 
@@ -760,6 +823,31 @@ class Command(BaseCommand):
                 auto_matched=False,
                 match_method='manual_loaded_slot',
             )
+
+        if (None, 254) not in represented_slots:
+            external_filament = (
+                Filament.objects.filter(
+                    is_loaded_externally=True,
+                    current_printer=printer_metric.device,
+                )
+                .order_by('-last_loaded_date', '-updated_at')
+                .first()
+            )
+            if external_filament:
+                FilamentSnapshot.objects.create(
+                    printer_metric=printer_metric,
+                    filament=external_filament,
+                    tray_id=254,
+                    ams_unit_id=None,
+                    ams_type='External Spool',
+                    type=external_filament.type,
+                    sub_type=external_filament.sub_type,
+                    brand=external_filament.brand,
+                    color=self._inventory_color_for_mqtt(external_filament),
+                    remain_percent=external_filament.remaining_percent,
+                    auto_matched=False,
+                    match_method='manual_loaded_external',
+                )
 
     def _update_hotends(self, printer, printer_metric, hotends_data):
         from bambu_run.models import Hotend, HotendSnapshot
@@ -822,7 +910,7 @@ class Command(BaseCommand):
             if tray_now not in (None, '', '255'):
                 try:
                     tray_id = int(tray_now)
-                    if 0 <= tray_id <= 15:
+                    if 0 <= tray_id <= 15 or tray_id == 254:
                         session.trays_used.add(tray_id)
                 except (ValueError, TypeError):
                     pass
@@ -1189,11 +1277,15 @@ class Command(BaseCommand):
         if slot_id is not None:
             if usage.tray_id != slot_id:
                 return False
+            if usage.tray_id == 254:
+                return True
             return usage.ams_unit_id is None or ams_id is None or usage.ams_unit_id == ams_id
 
         absolute_slot = self._to_int(entry.get('ams'))
         if absolute_slot is None:
             return False
+        if absolute_slot == 254:
+            return usage.tray_id == 254
         if absolute_slot >= 128:
             return usage.ams_unit_id == absolute_slot and usage.tray_id == 0
         return usage.ams_unit_id == absolute_slot // 4 and usage.tray_id == absolute_slot % 4
@@ -1353,7 +1445,11 @@ class Command(BaseCommand):
     def _snapshot_has_observed_data(self, snapshot):
         if snapshot.get("gcode_state"):
             return True
-        if snapshot.get("filaments") or snapshot.get("ams_units") or snapshot.get("external_spool"):
+        if (
+            snapshot.get("filaments")
+            or snapshot.get("ams_units")
+            or self._external_spool_has_info(snapshot.get("external_spool"))
+        ):
             return True
         if snapshot.get("hotends") or snapshot.get("hms"):
             return True

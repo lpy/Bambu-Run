@@ -40,7 +40,7 @@
         <div class="col-md-4">
             <div class="card infra-card-success">
                 <div class="card-body">
-                    <div class="stat-label">Loaded in AMS</div>
+                    <div class="stat-label">Loaded</div>
                     <div class="stat-value">{{ loaded_spools }}</div>
                 </div>
             </div>
@@ -77,8 +77,10 @@
                 <div class="col-md-2">
                     <select name="loaded" class="form-select">
                         <option value="">All Spools</option>
-                        <option value="yes" {% if request.GET.loaded == 'yes' %}selected{% endif %}>Loaded in AMS</option>
-                        <option value="no" {% if request.GET.loaded == 'no' %}selected{% endif %}>Not Loaded</option>
+                        <option value="yes" {% if request.GET.loaded == 'yes' %}selected{% endif %}>Loaded</option>
+                        <option value="ams" {% if request.GET.loaded == 'ams' %}selected{% endif %}>Loaded in AMS</option>
+                        <option value="external" {% if request.GET.loaded == 'external' %}selected{% endif %}>External Spool</option>
+                        <option value="no" {% if request.GET.loaded == 'no' %}selected{% endif %}>Storage</option>
                     </select>
                 </div>
                 <div class="col-md-2">
@@ -178,7 +180,12 @@
                                 </div>
                             </td>
                             <td class="align-middle">
-                                {% if filament.is_loaded_in_ams %}
+                                {% if filament.is_loaded_externally %}
+                                    <span class="badge bg-success">
+                                        {% if filament.current_printer %}{{ filament.current_printer.name }} · {% endif %}
+                                        External Spool
+                                    </span>
+                                {% elif filament.is_loaded_in_ams %}
                                     <span class="badge bg-success">
                                         {% if filament.current_printer %}{{ filament.current_printer.name }} · {% endif %}
                                         {% if filament.ams_type %}{{ filament.ams_type }}{% else %}AMS{% endif %}

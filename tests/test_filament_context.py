@@ -216,6 +216,81 @@ def test_dashboard_uses_inventory_location_when_snapshot_unit_missing(logged_in_
 
 
 @pytest.mark.django_db
+def test_dashboard_displays_inventory_external_spool_without_snapshot(logged_in_client):
+    printer = Printer.objects.create(name="3DP-093-642", model="H2C", is_active=True)
+    metric = PrinterMetrics.objects.create(
+        device=printer,
+        timestamp=timezone.now(),
+        ams_units=[
+            {"unit_id": "0", "ams_type": "AMS 2 Pro", "humidity": 5, "temp": 22.5},
+        ],
+    )
+    FilamentSnapshot.objects.create(
+        printer_metric=metric,
+        tray_id=0,
+        ams_unit_id=0,
+        ams_type="AMS 2 Pro",
+        type="PLA",
+        remain_percent=80,
+    )
+    Filament.objects.create(
+        type="TPU",
+        sub_type="TPU 95A",
+        brand="eSUN",
+        color="Default:Black",
+        color_hex="#000000",
+        current_printer=printer,
+        is_loaded_externally=True,
+        current_tray_id=254,
+        remaining_percent=95,
+    )
+
+    resp = logged_in_client.get(
+        reverse("bambu_run:printer_dashboard", kwargs={"pk": printer.pk})
+    )
+
+    groups = resp.context["stats"]["ams_groups"]
+    external_group = groups[0]
+    assert external_group["label"] == "External Spool"
+    assert external_group["filaments"][0]["is_external"] is True
+    assert external_group["filaments"][0]["type"] == "TPU"
+    assert external_group["filaments"][0]["brand"] == "eSUN"
+    assert external_group["filaments"][0]["color_name"] == "Default:Black"
+    assert external_group["filaments"][0]["remain_percent"] == Decimal("95.00")
+
+    html = resp.content.decode()
+    assert "External Spool" in html
+    assert "eSUN" in html
+
+
+@pytest.mark.django_db
+def test_dashboard_displays_raw_external_spool_without_inventory_match(logged_in_client):
+    printer = Printer.objects.create(name="3DP-093-642", model="H2C", is_active=True)
+    PrinterMetrics.objects.create(
+        device=printer,
+        timestamp=timezone.now(),
+        external_spool={
+            "type": "PETG",
+            "sub_type": "PETG Basic",
+            "color": "00FF00FF",
+            "remain_percent": 55,
+            "is_external": True,
+        },
+    )
+
+    resp = logged_in_client.get(
+        reverse("bambu_run:printer_dashboard", kwargs={"pk": printer.pk})
+    )
+
+    groups = resp.context["stats"]["ams_groups"]
+    assert len(groups) == 1
+    assert groups[0]["label"] == "External Spool"
+    assert groups[0]["filaments"][0]["type"] == "PETG"
+    assert groups[0]["filaments"][0]["brand"] == "PETG Basic"
+    assert groups[0]["filaments"][0]["remain_percent"] == Decimal("55")
+
+
+@pytest.mark.django_db
 def test_dashboard_renders_wide_and_compact_panels(logged_in_client):
     printer = Printer.objects.create(name="Printer A", model="H2C", is_active=True)
     metric = PrinterMetrics.objects.create(
@@ -279,8 +354,9 @@ def test_filament_form_uses_latest_ams_units_for_location_choices(logged_in_clie
 
     assert resp.status_code == 200
     form = resp.context["form"]
-    assert (0, "Printer A - AMS 2 Pro (Unit 0)") in form.fields["ams_unit_id"].widget.choices
-    assert (128, "Printer A - AMS HT (Unit 128)") in form.fields["ams_unit_id"].widget.choices
+    assert ("external", "External Spool") in form.fields["location_target"].choices
+    assert ("0", "AMS 2 Pro (Unit 0)") in form.fields["location_target"].choices
+    assert ("128", "AMS HT (Unit 128)") in form.fields["location_target"].choices
     assert '"printer_id": ' in resp.content.decode()
     assert '"tray_ids": [0]' in resp.content.decode()
 
@@ -464,7 +540,7 @@ def test_filament_inventory_persists_sort_through_filters_and_pagination(logged_
 
 
 @pytest.mark.django_db
-def test_loaded_filament_requires_ams_unit_and_tray():
+def test_printer_location_requires_ams_unit_or_external_spool():
     printer = Printer.objects.create(name="Printer A", model="H2C", is_active=True)
     form = FilamentForm(data={
         "created_by": "Manual",
@@ -476,17 +552,15 @@ def test_loaded_filament_requires_ams_unit_and_tray():
         "diameter": "1.75",
         "initial_weight_grams": "1000",
         "remaining_percent": "100",
-        "is_loaded_in_ams": "on",
         "current_printer": str(printer.pk),
-        "current_tray_id": "0",
     })
 
     assert not form.is_valid()
-    assert "AMS Unit ID required when filament is loaded in AMS" in str(form.errors)
+    assert "AMS Unit or External Spool required when printer is selected" in str(form.errors)
 
 
 @pytest.mark.django_db
-def test_loaded_filament_requires_printer_location():
+def test_no_printer_keeps_filament_in_storage():
     form = FilamentForm(data={
         "created_by": "Manual",
         "type": "PLA",
@@ -497,10 +571,76 @@ def test_loaded_filament_requires_printer_location():
         "diameter": "1.75",
         "initial_weight_grams": "1000",
         "remaining_percent": "100",
-        "is_loaded_in_ams": "on",
-        "ams_unit_id": "0",
-        "current_tray_id": "0",
+        "location_target": "0",
+        "location_tray_id": "0",
     })
 
-    assert not form.is_valid()
-    assert "Printer required when filament is loaded in AMS" in str(form.errors)
+    assert form.is_valid(), form.errors
+    filament = form.save()
+    assert filament.current_printer is None
+    assert filament.is_loaded_in_ams is False
+    assert filament.is_loaded_externally is False
+    assert filament.current_tray_id is None
+    assert filament.ams_unit_id is None
+
+
+@pytest.mark.django_db
+def test_filament_form_derives_ams_location_from_printer_unit_and_tray():
+    printer = Printer.objects.create(name="Printer A", model="H2C", is_active=True)
+    ams_units = [{
+        "printer_id": printer.pk,
+        "printer_name": printer.name,
+        "unit_id": 128,
+        "ams_type": "AMS HT",
+        "label": "Printer A - AMS HT (Unit 128)",
+        "tray_ids": [0],
+    }]
+
+    form = FilamentForm(data={
+        "created_by": "Manual",
+        "type": "PLA",
+        "sub_type": "PLA Basic",
+        "brand": "SUNLU",
+        "color": "Black",
+        "color_hex": "#000000",
+        "diameter": "1.75",
+        "initial_weight_grams": "1000",
+        "remaining_percent": "100",
+        "current_printer": str(printer.pk),
+        "location_target": "128",
+        "location_tray_id": "0",
+    }, ams_units=ams_units)
+    assert form.is_valid(), form.errors
+    filament = form.save()
+    assert filament.is_loaded_in_ams is True
+    assert filament.is_loaded_externally is False
+    assert filament.current_printer == printer
+    assert filament.ams_unit_id == 128
+    assert filament.ams_type == "AMS HT"
+    assert filament.current_tray_id == 0
+
+
+@pytest.mark.django_db
+def test_external_spool_location_is_selected_from_printer_location():
+    printer = Printer.objects.create(name="Printer A", model="H2C", is_active=True)
+    form = FilamentForm(data={
+        "created_by": "Manual",
+        "type": "PLA",
+        "sub_type": "PLA Basic",
+        "brand": "SUNLU",
+        "color": "Black",
+        "color_hex": "#000000",
+        "diameter": "1.75",
+        "initial_weight_grams": "1000",
+        "remaining_percent": "100",
+        "current_printer": str(printer.pk),
+        "location_target": "external",
+    })
+    assert form.is_valid(), form.errors
+    filament = form.save()
+    assert filament.is_loaded_externally is True
+    assert filament.is_loaded_in_ams is False
+    assert filament.current_printer == printer
+    assert filament.current_tray_id == 254
+    assert filament.ams_unit_id is None
+    assert filament.ams_type == ""

@@ -384,6 +384,61 @@ def test_local_gcode_usage_deducts_manually_loaded_third_party_filament(tmp_path
 
 
 @pytest.mark.django_db
+def test_external_spool_snapshot_and_local_gcode_usage(tmp_path):
+    gcode_file = tmp_path / "external_job.gcode"
+    gcode_file.write_text("; filament used [g] = 12.34\n", encoding="utf-8")
+    base_snapshot = {
+        "external_spool": {
+            "tray_id": "254",
+            "type": "PLA",
+            "sub_type": "PLA Basic",
+            "color": "FFFFFFFF",
+            "remain_percent": 0,
+            "is_external": True,
+        },
+        "tray_now": "254",
+        "gcode_file": "external_job.gcode",
+        "subtask_name": "external_job",
+    }
+    start_snapshot = {**base_snapshot, "gcode_state": "RUNNING", "print_percent": 1}
+    end_snapshot = {**base_snapshot, "gcode_state": "FINISH", "print_percent": 100}
+    session = make_session("SERIAL-A", "Printer A", [start_snapshot, end_snapshot])
+    filament = Filament.objects.create(
+        type="PLA",
+        sub_type="PLA Basic",
+        brand="SUNLU",
+        color="White",
+        color_hex="#FFFFFF",
+        initial_weight_grams=1000,
+        remaining_percent=100,
+        remaining_weight_grams=1000,
+        current_printer=session.printer,
+        is_loaded_externally=True,
+        current_tray_id=254,
+    )
+
+    cmd = Command()
+    cmd.verbose = False
+    with override_settings(BAMBU_RUN_PRINT_FILE_DIRS=[str(tmp_path)]):
+        cmd._collect_printer_data(session)
+        cmd._collect_printer_data(session)
+
+    snapshots = FilamentSnapshot.objects.filter(filament=filament).order_by("printer_metric__timestamp")
+    assert snapshots.count() == 2
+    assert {snapshot.tray_id for snapshot in snapshots} == {254}
+    assert {snapshot.match_method for snapshot in snapshots} == {"manual_loaded_external"}
+
+    usage = FilamentUsage.objects.get(print_job__device=session.printer)
+    filament.refresh_from_db()
+
+    assert usage.tray_id == 254
+    assert usage.ams_unit_id is None
+    assert usage.consumed_grams == Decimal("12.34")
+    assert filament.remaining_weight_grams == Decimal("987.66")
+    assert filament.remaining_percent == Decimal("98.77")
+
+
+@pytest.mark.django_db
 def test_mid_print_filament_change_with_unknown_leftover_charges_replacement_from_gcode_line(tmp_path):
     gcode_file = tmp_path / "runout_job.gcode"
     gcode_file.write_text(

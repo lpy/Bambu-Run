@@ -166,3 +166,33 @@ def test_snapshot_keeps_ams_tray_with_display_info_even_without_type():
         "ams_info": "10001003",
         "ams_type": "AMS 2 Pro",
     }]
+
+
+def test_snapshot_includes_external_spool_virtual_tray_fields():
+    state = PrinterState.from_mqtt_data({
+        "print": {
+            "gcode_state": "IDLE",
+            "vt_tray": {
+                "id": "254",
+                "tray_type": "PETG",
+                "tray_sub_brands": "PETG Basic",
+                "tray_color": "00FF00FF",
+                "remain": 0,
+                "tray_diameter": "1.75",
+                "tray_weight": "1000",
+                "tag_uid": "TAG-EXTERNAL",
+                "tray_uuid": "UUID-EXTERNAL",
+                "tray_info_idx": "GFG00",
+            },
+        }
+    })
+
+    snapshot = state.get_snapshot()
+
+    assert snapshot["external_spool"]["tray_id"] == "254"
+    assert snapshot["external_spool"]["type"] == "PETG"
+    assert snapshot["external_spool"]["sub_type"] == "PETG Basic"
+    assert snapshot["external_spool"]["color"] == "00FF00FF"
+    assert snapshot["external_spool"]["remain_percent"] == 0
+    assert snapshot["external_spool"]["tray_weight"] == "1000"
+    assert snapshot["external_spool"]["is_external"] is True

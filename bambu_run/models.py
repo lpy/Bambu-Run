@@ -480,6 +480,10 @@ class Filament(models.Model):
         default=False,
         help_text="Is this spool currently loaded in AMS?"
     )
+    is_loaded_externally = models.BooleanField(
+        default=False,
+        help_text="Is this spool currently loaded on the printer's external spool holder?"
+    )
     current_tray_id = models.IntegerField(
         null=True, blank=True,
         help_text="Tray slot index within its AMS unit (0-3 for AMS/AMS 2 Pro, 0 for AMS HT)"
@@ -527,6 +531,10 @@ class Filament(models.Model):
             models.Index(
                 fields=['current_printer', 'is_loaded_in_ams'],
                 name='infra_fila_current_5eb7f3_idx',
+            ),
+            models.Index(
+                fields=['current_printer', 'is_loaded_externally'],
+                name='infra_fila_external_20d56d_idx',
             ),
             models.Index(fields=['is_loaded_in_ams', 'current_tray_id']),
             models.Index(fields=['remaining_percent']),

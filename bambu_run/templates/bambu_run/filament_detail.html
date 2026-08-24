@@ -71,7 +71,13 @@
             <div class="card">
                 <div class="card-body">
                     <h6>Location</h6>
-                    {% if filament.is_loaded_in_ams %}
+                    {% if filament.is_loaded_externally %}
+                        <span class="badge bg-success fs-6">
+                            {% if filament.current_printer %}{{ filament.current_printer.name }} · {% endif %}
+                            External Spool
+                        </span>
+                        <p class="mb-0 mt-2"><small>Loaded: {{ filament.last_loaded_date|date:"Y-m-d H:i" }}</small></p>
+                    {% elif filament.is_loaded_in_ams %}
                         <span class="badge bg-success fs-6">
                             {% if filament.current_printer %}{{ filament.current_printer.name }} · {% endif %}
                             {% if filament.ams_type %}{{ filament.ams_type }}{% else %}AMS{% endif %}
