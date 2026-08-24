@@ -1,312 +1,184 @@
-# Bambu-Run
+# Bambu-Run Filament Tracker
 
-<p align="center">
-  <img src="docs/BambuRun.png" alt="Bambu-Run Logo" width="300"/>
-</p>
+Self-hosted monitoring and filament inventory for Bambu Lab printers, with a focus on third-party filament usage in AMS setups.
 
-Richer data, powerful customization for your Bambu Lab 3D printer.
+This repository has diverged from the original Bambu-Run project. You are welcome to refer to the original [Bambu-Run repository](https://github.com/RunLit/Bambu-Run). The upstream README has been preserved as [OLD_README.md](OLD_README.md). This fork keeps the printer dashboard, collection service, and self-hosted deployment model, but extends filament management so non-Bambu spools can be loaded into AMS trays and deducted from local inventory.
 
-Bambu-Run is a self-hosted web dashboard that gives you:
-- Real-time monitoring and logging (temperatures, fan speeds, print progress, and more)
-- Automatic filament inventory tracking and usage monitoring (AMS required)
+![Filament inventory](docs/Filament_Inventory.png)
 
-All running on hardware you own.
+## What This Fork Adds
 
-### What You'll Need
+- **Third-party filament inventory**: manage SUNLU, eSUN, Polymaker, Overture, and other non-Bambu spools alongside Bambu filament.
+- **Global spool inventory**: inventory belongs to you, not to a specific printer.
+- **Printer-scoped loading locations**: AMS units, AMS trays, and external spool slots are tied to a printer.
+- **Multiple AMS support**: select the AMS unit and tray when loading a spool, including AMS 2 Pro and AMS HT style unit IDs.
+- **Dashboard fallback behavior**: when a tray is not linked to a local inventory spool, the dashboard still shows the filament information reported by Bambu Cloud/MQTT.
+- **Filament usage deduction**: deduct usage from locally managed third-party spools using printer job data and local print-file metadata where available.
+- **Filament change handling**: supports known-leftover and unknown-leftover spool replacement cases during a print.
+- **Decimal remaining values**: remaining percent and remaining weight support hand-entered values with up to 2 decimal places.
+- **Global managed colors**: colors are no longer tied to filament type. A `Finish` field labels options like `Default:Black`, `Silk:Green`, or `Transparent:Clear`.
+- **AMS environment display fixes**: AMS humidity uses raw `%RH` values when available.
 
-Any always-on device works — a **Raspberry Pi** (3B+, 4, or 5) is ideal: beginner-friendly, runs Raspberry Pi OS out of the box, and quiet enough to tuck behind a desk. An old PC or laptop with Linux works too.
+## Setup With Docker
 
-It runs quietly in the background 24/7, capturing every print, filament change, and AMS update the moment it happens. And the power bill? A Raspberry Pi 4 under light load draws about **5W**. That's roughly **43.8 kWh per year**, or the cost of **three cups of coffee**. ☕☕☕ Tuck it out of sight and forget it's there.
-
----
-
-## What It Looks Like
-
-<table>
-  <tr>
-    <td width="50%">
-      <p align="center"><strong>Live Dashboard</strong><br/>Real-time nozzle temps, bed temp, print progress, and chamber light.</p>
-      <img src="https://github.com/user-attachments/assets/169ec3e5-62a9-4e96-afed-dc6ac2647aef" alt="Live Dashboard" width="100%"/>
-    </td>
-    <td width="50%">
-      <p align="center"><strong>Historical Charts</strong><br/>Filament remaining and nozzle temp over time, per printer.</p>
-      <img src="https://github.com/user-attachments/assets/11913c62-254f-4ba6-8d93-d5c27a9406be" alt="Historical Charts" width="100%"/>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <p align="center"><strong>Filament Inventory</strong><br/>Every spool you own — brand, type, color, remaining %, current tray.</p>
-      <img src="https://github.com/user-attachments/assets/8e472704-a6d8-45e1-93c4-c6f37d0b55a0" alt="Filament Inventory" width="100%"/>
-    </td>
-    <td width="50%">
-      <p align="center"><strong>AMS / Filament Slots</strong><br/>What's loaded right now, grouped by AMS unit, with humidity/temp.</p>
-      <img src="https://github.com/user-attachments/assets/200ad65f-a716-4a52-98b2-d5f5ce2445b9" alt="AMS / Filament Slots" width="100%"/>
-    </td>
-  </tr>
-  <tr>
-    <td colspan="2">
-      <p align="center"><strong>Hotend Wear Tracking</strong><br/>Used time and wear per hotend slot — handy for multi-nozzle / AMS-fed toolhead setups.</p>
-      <img src="https://github.com/user-attachments/assets/defee0da-772c-40c2-8dcf-9d3f230cc5ee" alt="Hotend Wear Tracking" width="100%"/>
-    </td>
-  </tr>
-</table>
-
----
-
-## Table of Contents
-
-- [What It Looks Like](#what-it-looks-like)
-- [Native Setup (Recommended for Raspberry Pi)](#native-setup-recommended-for-raspberry-pi)
-  - [What You'll Need](#what-youll-need)
-  - [Clone and run setup.sh](#clone-and-run-setupsh)
-  - [Managing Bambu-Run](#managing-bambu-run)
-  - [Troubleshooting (Native)](#troubleshooting-native)
-- [Docker Setup](#docker-setup)
-- [Batch Importing Filament Colors and Filament Types](#batch-importing-filament-colors-and-filament-types)
-
----
-
-## Native Setup (Recommended for Raspberry Pi)
-
-No Docker required. Works on any Raspberry Pi (including 32-bit Pi Model B) running Raspberry Pi OS with Python 3.10+.
-
-### What You'll Need
-
-- Raspberry Pi on your local network (Python 3.10+)
-- Bambu Lab printer
-- Bambu Lab account **email and password**
-
-### Clone and run setup.sh
+Copy the environment template:
 
 ```bash
-git clone https://github.com/RunLit/Bambu-Run.git
-cd Bambu-Run
-bash setup.sh
-```
-
-That's it! The script handles everything interactively, just answer the prompts. When it finishes, open `http://<ip>` from any device on same network.
-
-The script is safe to re-run at any time.
-
----
-
-**What the script does**:
-
-- **Dependencies**: creates a Python virtual environment, installs all packages
-- **Credentials**: prompts for your **BambuLab Cloud account** email, password, and timezone; auto-generates a `DJANGO_SECRET_KEY`; writes `.env`
-- **Bambu Cloud auth**: runs `bambu_collector --once`; 
-  - Bambu Lab will send a 6-digit code to your email; check you email box and enter it when prompted; 
-  - the resulting token is saved to `.env` automatically; future restarts skip this step
-- **Dashboard login**: runs `createsuperuser`; choose a username and password for Bambu-Run web UI log in
-- **Services**: installs and starts two systemd services (`bambu-run-web` and `bambu-run-collector`), enables linger so they auto-start on boot
-- **Port 80**: sets an `iptables` redirect (80 to 8000) so you can reach the dashboard at a plain `http://<pi-ip>` with no port number; persisted via `iptables-persistent` across reboots. 
-
----
-
-### Managing Bambu-Run
-
-All commands manage Bambu-Run encapsulated in `./native/bambu-run.sh`. Alternatively, you can do it yourself with systemctl commands.
-```bash
-./native/bambu-run.sh status    # service status
-./native/bambu-run.sh logs      # tail live logs (Ctrl+C to stop)
-./native/bambu-run.sh restart   # restart both services
-./native/bambu-run.sh stop      # stop everything
-./native/bambu-run.sh update    # git pull + pip install + migrate + restart
-```
-
-### Troubleshooting (Native)
-
-**Services die when SSH disconnects:** `sudo loginctl enable-linger $USER`
-
-**Services not starting:** `./native/bambu-run.sh status` and `./native/bambu-run.sh logs`
-
-**Auth errors / token expired:** Remove `BAMBU_TOKEN` from `.env` and re-run `bash setup.sh`
-
-**Uninstall:**
-```bash
-systemctl --user disable --now bambu-run-web bambu-run-collector
-rm ~/.config/systemd/user/bambu-run-{web,collector}.service
-systemctl --user daemon-reload
-```
-
-**Wipe everything and start over:**
-```bash
-# Stop and remove services
-systemctl --user stop bambu-run-web bambu-run-collector
-systemctl --user disable bambu-run-web bambu-run-collector
-rm ~/.config/systemd/user/bambu-run-{web,collector}.service
-systemctl --user daemon-reload
-
-# Remove port redirect (replace 80 with whatever port you chose during setup)
-sudo iptables -t nat -D PREROUTING -p tcp --dport 80 -j REDIRECT --to-port 8000 2>/dev/null || true
-sudo iptables -t nat -D OUTPUT -o lo -p tcp --dport 80 -j REDIRECT --to-port 8000 2>/dev/null || true
-sudo netfilter-persistent save 2>/dev/null || true
-
-# Delete repo — wipes venv, database, and .env
-cd ~
-rm -rf ~/Bambu-Run
-
-# Re-clone and run setup from scratch
-git clone https://github.com/RunLit/Bambu-Run.git
-cd Bambu-Run
-bash setup.sh
-```
-
----
-
-## Docker Setup
-
-Requires Docker and Docker Compose installed. Assumes you already know how to get there.
-
-**Clone and configure:**
-
-```bash
-git clone https://github.com/RunLit/Bambu-Run.git
-cd Bambu-Run
 cp .env.example .env
-# Edit .env: set BAMBU_USERNAME, BAMBU_PASSWORD, TIMEZONE
 ```
 
-**First-time auth** (Bambu Lab sends a 6-digit verification code to your email):
+Edit `.env` and set at least:
+
+```bash
+BAMBU_USERNAME=your_email@example.com
+BAMBU_PASSWORD=your_password
+TIMEZONE=America/Los_Angeles
+DJANGO_SECRET_KEY=replace-with-a-random-secret
+ALLOWED_HOSTS=localhost,127.0.0.1,<your-host-ip>
+CSRF_TRUSTED_ORIGINS=http://localhost:8000,http://<your-host-ip>:8000
+```
+
+Build and initialize:
 
 ```bash
 docker compose build
 docker compose run --rm bambu-run python standalone/manage.py migrate --noinput
 docker compose run --rm bambu-run python standalone/manage.py bambu_collector --once
-# Paste the printed token into .env as BAMBU_TOKEN=...
 ```
 
-**Start and create your dashboard login:**
+During first Bambu authentication, Bambu Lab may send a verification code by email. After authentication, save the generated token in `.env` as `BAMBU_TOKEN=...` so future container starts do not require re-auth.
+
+Start the app:
 
 ```bash
 docker compose up -d
 docker compose exec bambu-run python standalone/manage.py createsuperuser
 ```
 
-Dashboard is at `http://<host-ip>:8000`.
+Open:
 
-**Optional: offline third-party filament deduction**
+```text
+http://<host-ip>:8000
+```
 
-For third-party AMS spools, Bambu-Run can deduct usage from local `.gcode`,
-`.gco`, `.3mf`, or `.gcode.3mf` files when Bambu Cloud is unavailable. Mount the
-folder that contains print files into the container and set:
+## NAS Setup Notes
+
+This app works well on a NAS or other always-on Docker host.
+
+Keep port `8000` mapped for the web page and keep the database persistent by using the existing Docker volume:
+
+```yaml
+services:
+  bambu-run:
+    ports:
+      - "8000:8000"
+    volumes:
+      - bambu_data:/app/data
+```
+
+If you want Bambu-Run to inspect local print files for offline usage estimation, mount a NAS folder into the container and point the app at it:
+
+```yaml
+services:
+  bambu-run:
+    ports:
+      - "8000:8000"
+    volumes:
+      - bambu_data:/app/data
+      - /volume1/prints:/prints:ro
+```
+
+Then set:
 
 ```bash
 BAMBU_RUN_PRINT_FILE_DIRS=/prints
 ```
 
-For multiple folders, separate paths with the OS path separator (`:` on Linux).
-On Synology Container Manager, this usually means mapping a NAS folder such as
-`/volume1/prints` to `/prints` inside the container.
-
-**Common operations:**
+After code changes, rebuilding the image is usually the cleanest Docker path:
 
 ```bash
-docker compose logs -f                          # live logs
-docker compose down                             # stop (data preserved in volume)
-git pull && docker compose up -d --build        # update
+docker compose up -d --build
+docker compose exec bambu-run python standalone/manage.py migrate --noinput
 ```
 
-**Troubleshooting:** Auth errors → remove `BAMBU_TOKEN` from `.env` and re-run the auth step. No data → check `docker compose logs -f` for MQTT connection errors.
+If only `.env` changed, a rebuild is not needed:
 
----
-
-## Batch Importing Filament Colors and Filament Types
-
-Bambu-Run ships with a full Bambu Lab color catalog under `docs/Bambu_Color_Catalog/` (one `.txt` file per filament sub-type, e.g. `PLA Basic.txt`, `PETG HF.txt`). Importing these populates the **Filament Colors** database so the dashboard shows proper color names instead of raw hex codes.
-
-### Adding your own colors
-
-Need a filament type that isn't in the bundled catalog? Create your own `.txt` file and point the importer at it.
-
-**File naming** — the filename determines the filament type and sub-type:
-```
-PLA Basic.txt     → type: PLA,  sub-type: PLA Basic
-PETG HF.txt       → type: PETG, sub-type: PETG HF
-ABS.txt           → type: ABS,  sub-type: ABS
+```bash
+docker compose restart bambu-run
 ```
 
-**File format** — list each color on its own line, either as two rows (name then hex) or on the same line:
+## First-Time Filament Workflow
+
+1. Go to **Filament Inventory**.
+2. Add a spool, for example `SUNLU PLA White`.
+3. Set initial weight and remaining weight/percent. Unknown existing spools can be entered with your best estimate.
+4. Enable **Loaded in AMS**.
+5. Select the printer, AMS unit, and tray.
+6. Save.
+
+The dashboard should now show that local inventory spool in the matching tray. When usage data is available, Bambu-Run deducts material from the linked spool.
+
+If no inventory spool is linked to a tray, the dashboard falls back to whatever Bambu reports for that tray instead of hiding it.
+
+## Filament Colors And Finishes
+
+Managed colors are global. They are not tied to PLA/PETG/ABS or any filament type.
+
+Each color has:
+
+- `Color Name`, for example `Black`, `Green`, `Jade White`
+- `Finish`, for example `Default`, `Matte`, `Silk`, `Transparent`
+- `Hex Code`, used by the color picker and swatches. Selecting a managed color automatically reflects this hex code in the color picker.
+
+In filament forms, managed color options are displayed as:
+
+```text
+Default:Black
+Silk:Green
+Transparent:Clear
 ```
-Jade White
-Hex:#FFFFFF
 
-Black Walnut    #4F3F24
+The color picker can still be edited manually for custom colors.
+
+## Useful Commands
+
+Run migrations:
+
+```bash
+docker compose exec bambu-run python standalone/manage.py migrate --noinput
 ```
 
-Bambu Lab's website filament pages and their downloadable PDF catalogs are a reliable source — both list color names alongside hex codes you can copy directly.
+Run the collector once:
 
-### When to run this
+```bash
+docker compose exec bambu-run python standalone/manage.py bambu_collector --once
+```
 
-Run the import **once after first setup** to seed the full color catalog in one go, rather than adding colors one by one. Run it again any time you want to add colors for a new filament type. Re-running is always safe — duplicates are detected and skipped automatically.
+Follow logs:
 
-### Import all colors (recommended)
+```bash
+docker compose logs -f
+```
 
-If the container is already running (`docker compose up -d`):
+Create an admin user:
+
+```bash
+docker compose exec bambu-run python standalone/manage.py createsuperuser
+```
+
+Import bundled Bambu color catalogs:
 
 ```bash
 docker compose exec bambu-run python standalone/manage.py bambu_import_colors docs/Bambu_Color_Catalog/
 ```
 
-If the container is not running yet:
+## Verification
+
+Before committing changes, the current test target is:
 
 ```bash
-docker compose run --rm bambu-run python standalone/manage.py bambu_import_colors docs/Bambu_Color_Catalog/
+python -m pytest -q
+python standalone/manage.py makemigrations --check --dry-run
 ```
 
-### Import a file from your computer
-
-If your `.txt` color file lives on your Mac, Pi, or any machine running Docker (i.e. not inside the repo), copy it into the container first, then run the importer:
-
-```bash
-# Step 1 — copy the file from your machine into the container
-docker compose cp /path/to/your/PLA\ Basic.txt bambu-run:/tmp/
-
-# Step 2 — run the importer against the copied path
-docker compose exec bambu-run python standalone/manage.py bambu_import_colors /tmp/PLA\ Basic.txt
-```
-
-To import a whole folder of files at once:
-
-```bash
-# Step 1 — copy the folder
-docker compose cp /path/to/your/color_catalog/ bambu-run:/tmp/color_catalog/
-
-# Step 2 — import everything in it
-docker compose exec bambu-run python standalone/manage.py bambu_import_colors /tmp/color_catalog/
-```
-
-> **macOS tip:** You can drag a file from Finder into the terminal to paste its full path.
-
-### Import a single filament type
-
-To import only one sub-type from the bundled catalog (e.g. just PLA Basic):
-
-```bash
-docker compose exec bambu-run python standalone/manage.py bambu_import_colors "docs/Bambu_Color_Catalog/PLA Basic.txt"
-```
-
-### Preview before importing (dry run)
-
-Check what would be added without writing anything to the database:
-
-```bash
-docker compose exec bambu-run python standalone/manage.py bambu_import_colors docs/Bambu_Color_Catalog/ --dry-run
-```
-
-### What the output means
-
-```
-Processing: PLA Basic.txt  →  type='PLA'  sub_type='PLA Basic'
-  Parsed 40 color(s).
-  + 'Bambu Green' #009F87  (PLA / PLA Basic)
-  + 'Jade White'  #FFFFFF  (PLA / PLA Basic)
-  ...
-──────────────────────────────────────────────────
-  Created:              40
-  Skipped (duplicate):  0
-```
-
-- **Created** — new color entries added to the database
-- **Skipped (duplicate)** — already existed, not changed
-- **Skipped (no type)** — only shown if `--no-auto-create-filament-type` is used and the filament type isn't in the database yet
+The app has test coverage for multi-AMS tray mapping, third-party filament usage deduction, decimal remaining values, dashboard fallback behavior, and global color finishes.
